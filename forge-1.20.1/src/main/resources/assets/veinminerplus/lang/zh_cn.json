@@ -17,5 +17,6 @@
   "veinminerplus.configuration.maxBlastBlocks": "爆破连锁最大方块数",
   "veinminerplus.configuration.maxBlastBlocksPerTick": "爆破模式每 Tick 最大挖掘数",
   "veinminerplus.configuration.blastSearchDistance": "爆破连锁间隔距离",
-  "message.veinminerplus.progress": "连锁挖掘：%s 个方块"
+  "message.veinminerplus.progress": "连锁挖掘：%s 个方块",
+  "commands.veinminerplus.blast_speed": "爆破速度：每 tick %s 个方块（范围 %s-%s）"
 }

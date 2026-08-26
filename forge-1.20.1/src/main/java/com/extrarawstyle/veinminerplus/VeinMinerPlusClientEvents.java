@@ -2,12 +2,10 @@ package com.extrarawstyle.veinminerplus;
 
 import org.lwjgl.glfw.GLFW;
 
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RenderGuiEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -23,30 +21,17 @@ public final class VeinMinerPlusClientEvents {
         }
 
         if (event.getAction() == GLFW.GLFW_RELEASE) {
-            VeinMinerPlusClient.modeSelectorOpen = false;
-            NetworkHandler.sendKeyState(false);
+            VeinMinerPlusClient.releaseKeyState();
             return;
         }
-        if (event.getAction() != GLFW.GLFW_PRESS) {
-            return;
-        }
-
-        Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.screen != null || minecraft.player == null || minecraft.level == null) {
-            return;
-        }
-
-        if ((event.getModifiers() & GLFW.GLFW_MOD_SHIFT) != 0) {
-            VeinMinerPlusClient.modeSelectorOpen = true;
-        } else {
-            NetworkHandler.sendKeyState(true);
+        if (event.getAction() == GLFW.GLFW_PRESS) {
+            VeinMinerPlusClient.syncKeyState();
         }
     }
 
     @SubscribeEvent
     public static void onMouseScroll(InputEvent.MouseScrollingEvent event) {
-        if (!VeinMinerPlusClient.modeSelectorOpen
-                || Minecraft.getInstance().screen != null
+        if (!VeinMinerPlusClient.isModeSelectorOpen()
                 || event.getScrollDelta() == 0.0D) {
             return;
         }
@@ -59,12 +44,13 @@ public final class VeinMinerPlusClientEvents {
 
     @SubscribeEvent
     public static void onRenderGui(RenderGuiEvent.Post event) {
-        if (!VeinMinerPlusClient.modeSelectorOpen) {
-            return;
-        }
+        VeinMinerPlusClient.renderModeMenu(event.getGuiGraphics());
+    }
 
-        GuiGraphics graphics = event.getGuiGraphics();
-        Component text = Component.translatable(VeinMinerPlusClient.clientMode.translationKey());
-        graphics.drawString(Minecraft.getInstance().font, text, 8, 8, 0xFFFFFFFF);
+    @SubscribeEvent
+    public static void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase == TickEvent.Phase.END) {
+            VeinMinerPlusClient.syncKeyState();
+        }
     }
 }

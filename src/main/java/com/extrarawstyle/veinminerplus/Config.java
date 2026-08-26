@@ -18,11 +18,11 @@ public final class Config {
             .defineInRange("maxBlastBlocks", 32767, 32, 32767);
 
     public static final ModConfigSpec.IntValue MAX_BLAST_BLOCKS_PER_TICK = BUILDER
-            .comment("Maximum blast blocks broken per server tick. Range: 1-256.")
-            .defineInRange("maxBlastBlocksPerTick", 32, 1, 256);
+            .comment("Maximum blast blocks broken per server tick. Range: 1-512.")
+            .defineInRange("maxBlastBlocksPerTick", 64, 1, 512);
 
     public static final ModConfigSpec.IntValue BLAST_SEARCH_DISTANCE = BUILDER
-            .comment("Maximum Manhattan distance searched from each found block in blast modes. Range: 3-32.")
+            .comment("Maximum Euclidean radius searched from each found block in blast modes. Range: 3-32.")
             .defineInRange("blastSearchDistance", 20, 3, 32);
 
     static final ModConfigSpec SPEC = BUILDER.build();
