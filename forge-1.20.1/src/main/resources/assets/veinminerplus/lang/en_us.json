@@ -1,0 +1,21 @@
+{
+  "key.veinminerplus.chain": "Chain mine",
+  "key.categories.veinminerplus": "VeinMinerPlus",
+  "chain.veinminerplus.normal": "Normal chain",
+  "chain.veinminerplus.area_1x1": "Area 1x1",
+  "chain.veinminerplus.area_3x3": "Area 3x3",
+  "chain.veinminerplus.blast_same": "Blast: same block",
+  "chain.veinminerplus.blast_ores": "Blast: all ores",
+  "chain.veinminerplus.blast_any": "Blast: any harvestable block",
+  "chain.veinminerplus.blast_logs": "Blast: logs",
+  "message.veinminerplus.broken": "VeinMiner: %s blocks",
+  "veinminerplus.configuration.title": "VeinMinerPlus Settings",
+  "veinminerplus.configuration.section.veinminerplus.common.toml": "Chain mining settings",
+  "veinminerplus.configuration.section.veinminerplus.common.toml.title": "Chain mining settings",
+  "veinminerplus.configuration.maxNormalBlocks": "Maximum normal chain blocks",
+  "veinminerplus.configuration.maxNormalBlocksPerTick": "Maximum normal chain blocks per tick",
+  "veinminerplus.configuration.maxBlastBlocks": "Maximum blast blocks",
+  "veinminerplus.configuration.maxBlastBlocksPerTick": "Maximum blast blocks per tick",
+  "veinminerplus.configuration.blastSearchDistance": "Blast search distance",
+  "message.veinminerplus.progress": "VeinMiner: %s blocks"
+}

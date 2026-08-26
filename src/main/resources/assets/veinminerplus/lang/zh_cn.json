@@ -1,0 +1,21 @@
+{
+  "key.veinminerplus.chain": "连锁挖掘",
+  "key.categories.veinminerplus": "VeinMinerPlus",
+  "chain.veinminerplus.normal": "普通连锁",
+  "chain.veinminerplus.area_1x1": "范围连锁 1x1",
+  "chain.veinminerplus.area_3x3": "范围连锁 3x3",
+  "chain.veinminerplus.blast_same": "爆破连锁：同类方块",
+  "chain.veinminerplus.blast_ores": "爆破连锁：所有矿石",
+  "chain.veinminerplus.blast_any": "爆破连锁：所有可挖方块",
+  "chain.veinminerplus.blast_logs": "爆破伐木：原木",
+  "message.veinminerplus.broken": "连锁挖掘：%s 个方块",
+  "veinminerplus.configuration.title": "VeinMinerPlus 设置",
+  "veinminerplus.configuration.section.veinminerplus.common.toml": "连锁挖掘设置",
+  "veinminerplus.configuration.section.veinminerplus.common.toml.title": "连锁挖掘设置",
+  "veinminerplus.configuration.maxNormalBlocks": "普通连锁最大方块数",
+  "veinminerplus.configuration.maxNormalBlocksPerTick": "普通连锁每 Tick 最大挖掘数",
+  "veinminerplus.configuration.maxBlastBlocks": "爆破连锁最大方块数",
+  "veinminerplus.configuration.maxBlastBlocksPerTick": "爆破模式每 Tick 最大挖掘数",
+  "veinminerplus.configuration.blastSearchDistance": "爆破连锁间隔距离",
+  "message.veinminerplus.progress": "连锁挖掘：%s 个方块"
+}

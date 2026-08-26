@@ -1,0 +1,8 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = 'https://maven.minecraftforge.net' }
+    }
+}
+
+rootProject.name = 'veinminerplus-forge-1.20.1'
