@@ -22,8 +22,8 @@ public final class Config {
             .defineInRange("maxBlastBlocksPerTick", 64, 1, 512);
 
     public static final ModConfigSpec.IntValue BLAST_SEARCH_DISTANCE = BUILDER
-            .comment("Maximum Euclidean radius searched from each found block in blast modes. Range: 3-32.")
-            .defineInRange("blastSearchDistance", 20, 3, 32);
+            .comment("Maximum Euclidean radius searched from each found block in blast modes. Range: 3-128.")
+            .defineInRange("blastSearchDistance", 20, 3, 128);
 
     static final ModConfigSpec SPEC = BUILDER.build();
 
