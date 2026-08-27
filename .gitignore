@@ -33,6 +33,7 @@ bin/
 .DS_Store
 
 ### Minecraft Modding ###
+PROJECT_SUMMARY.md
 run/
 !**/src/**/run/
 mods/
