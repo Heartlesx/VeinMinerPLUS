@@ -16,6 +16,8 @@
   "veinminerplus.configuration.maxNormalBlocksPerTick": "Maximum normal chain blocks per tick",
   "veinminerplus.configuration.maxBlastBlocks": "Maximum blast blocks",
   "veinminerplus.configuration.maxBlastBlocksPerTick": "Maximum blast blocks per tick",
-  "veinminerplus.configuration.blastSearchDistance": "Blast search distance",
-  "message.veinminerplus.progress": "VeinMiner: %s blocks"
+  "veinminerplus.configuration.blastSearchDistance": "Blast search distance (3-128)",
+  "message.veinminerplus.progress": "VeinMiner: %s blocks",
+  "commands.veinminerplus.blast_speed": "Blast speed: %s blocks per tick (range %s-%s)",
+  "commands.veinminerplus.blast_distance": "Blast search radius: %s blocks (range %s-%s)"
 }

@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -193,7 +194,7 @@ public final class ChainEvents {
 
         boolean matches = switch (mode) {
             case BLAST_ANY -> true;
-            case BLAST_ORES -> state.is(ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS);
+            case BLAST_ORES -> isOre(state);
             case BLAST_LOGS -> state.is(BlockTags.LOGS);
             default -> state.getBlock() == targetBlock;
         };
@@ -207,6 +208,15 @@ public final class ChainEvents {
         return blockEntity instanceof Container
                 || state.getMenuProvider(level, pos) != null
                 || level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null) != null;
+    }
+
+    private static boolean isOre(BlockState state) {
+        if (state.is(ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS)) {
+            return true;
+        }
+
+        // Some mod packs do not add their ores to the shared ore tags.
+        return BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath().endsWith("_ore");
     }
 
     private static boolean breakOne(ServerLevel level, ServerPlayer player, BlockPos pos, Block targetBlock,
@@ -253,14 +263,18 @@ public final class ChainEvents {
         for (int x = -distance; x <= distance; x++) {
             for (int y = -distance; y <= distance; y++) {
                 for (int z = -distance; z <= distance; z++) {
-                    if ((x != 0 || y != 0 || z != 0) && Math.abs(x) + Math.abs(y) + Math.abs(z) <= distance) {
+                    long squaredDistance = (long) x * x + (long) y * y + (long) z * z;
+                    if ((x != 0 || y != 0 || z != 0)
+                            && squaredDistance <= (long) distance * distance) {
                         offsets.add(new BlockPos(x, y, z));
                     }
                 }
             }
         }
         offsets.sort(Comparator
-                .comparingInt((BlockPos pos) -> Math.abs(pos.getX()) + Math.abs(pos.getY()) + Math.abs(pos.getZ()))
+                .comparingLong((BlockPos pos) -> (long) pos.getX() * pos.getX()
+                        + (long) pos.getY() * pos.getY()
+                        + (long) pos.getZ() * pos.getZ())
                 .thenComparingInt(pos -> Math.abs(pos.getY()))
                 .thenComparingInt(pos -> Math.abs(pos.getX()))
                 .thenComparingInt(BlockPos::getY)
@@ -378,10 +392,9 @@ public final class ChainEvents {
             BlockState targetState = targetBlock.defaultBlockState();
             this.sparseBlast = mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
-                    || mode == ChainMode.BLAST_SAME && (targetState.is(ORE_BLOCKS)
-                            || targetState.is(COMMON_ORE_BLOCKS) || targetState.is(BlockTags.LOGS));
+                    || mode == ChainMode.BLAST_SAME && (isOre(targetState) || targetState.is(BlockTags.LOGS));
             this.sparseTargets = new PriorityQueue<>(Comparator
-                    .comparingInt((BlockPos pos) -> manhattanDistance(origin, pos))
+                    .comparingLong((BlockPos pos) -> squaredDistance(origin, pos))
                     .thenComparingInt(BlockPos::getY)
                     .thenComparingInt(BlockPos::getX)
                     .thenComparingInt(BlockPos::getZ));
@@ -558,7 +571,7 @@ public final class ChainEvents {
                     }
 
                     for (BlockPos pos : matches) {
-                        if (manhattanDistance(center, pos) <= distance && examined.add(pos)) {
+                        if (squaredDistance(center, pos) <= (long) distance * distance && examined.add(pos)) {
                             sparseTargets.add(pos);
                         }
                     }
@@ -568,7 +581,7 @@ public final class ChainEvents {
 
         private boolean matchesSparseState(BlockState state) {
             return switch (mode) {
-                case BLAST_ORES -> state.is(ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS);
+                case BLAST_ORES -> isOre(state);
                 case BLAST_LOGS -> state.is(BlockTags.LOGS);
                 default -> state.is(targetBlock);
             };
@@ -598,10 +611,11 @@ public final class ChainEvents {
         return ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
     }
 
-    private static int manhattanDistance(BlockPos first, BlockPos second) {
-        return Math.abs(first.getX() - second.getX())
-                + Math.abs(first.getY() - second.getY())
-                + Math.abs(first.getZ() - second.getZ());
+    private static long squaredDistance(BlockPos first, BlockPos second) {
+        long dx = (long) first.getX() - second.getX();
+        long dy = (long) first.getY() - second.getY();
+        long dz = (long) first.getZ() - second.getZ();
+        return dx * dx + dy * dy + dz * dz;
     }
 
     private static final class SearchNode {
