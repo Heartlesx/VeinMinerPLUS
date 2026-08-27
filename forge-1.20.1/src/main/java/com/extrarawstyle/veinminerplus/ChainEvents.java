@@ -21,6 +21,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
@@ -50,6 +51,11 @@ public final class ChainEvents {
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
     private static final int BLOCK_BREAKS_PER_TICK = 8;
+    private static final double TPS_WARNING_THRESHOLD = 12.0D;
+    private static final double TPS_CRITICAL_THRESHOLD = 8.0D;
+    private static final double TPS_RECOVERY_THRESHOLD = 16.0D;
+    private static final int TPS_CRITICAL_TICKS_TO_STOP = 20;
+    private static final int TPS_WARNING_COOLDOWN_TICKS = 100;
 
     private static final TagKey<Block> ORE_BLOCKS = TagKey.create(Registries.BLOCK,
             ResourceLocation.withDefaultNamespace("ores"));
@@ -208,7 +214,7 @@ public final class ChainEvents {
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
-        if (state.isAir() || !level.mayInteract(player, pos)) {
+        if (state.isAir() || state.getDestroySpeed(level, pos) < 0.0F || !level.mayInteract(player, pos)) {
             return false;
         }
 
@@ -253,7 +259,16 @@ public final class ChainEvents {
             CAPTURING_DROPS.set(job.drops);
         }
         try {
-            return player.gameMode.destroyBlock(pos);
+            if (!Config.NO_HUNGER_COST.get()) {
+                return player.gameMode.destroyBlock(pos);
+            }
+
+            float exhaustion = player.getFoodData().getExhaustionLevel();
+            boolean destroyed = player.gameMode.destroyBlock(pos);
+            if (destroyed) {
+                player.getFoodData().setExhaustion(exhaustion);
+            }
+            return destroyed;
         } finally {
             if (previous == null) {
                 CAPTURING_DROPS.remove();
@@ -318,6 +333,20 @@ public final class ChainEvents {
 
     private static void showProgress(ServerPlayer player, int count) {
         player.displayClientMessage(Component.translatable("message.veinminerplus.progress", count), true);
+    }
+
+    private static double getServerTps(ServerLevel level) {
+        MinecraftServer server = level.getServer();
+        float tickTimeMillis = server.getAverageTickTime();
+        return tickTimeMillis <= 0.0F ? 20.0D : Math.min(20.0D, 1_000.0D / tickTimeMillis);
+    }
+
+    private static int roundedTps(double tps) {
+        return Math.max(0, (int) Math.round(tps));
+    }
+
+    private static void showTpsMessage(ServerPlayer player, String translationKey, double tps) {
+        player.displayClientMessage(Component.translatable(translationKey, roundedTps(tps)), true);
     }
 
     private static final class DropBuffer {
@@ -407,6 +436,8 @@ public final class ChainEvents {
         private int brokenCount = 1;
         private int areaDepth = 1;
         private int areaIndex;
+        private int criticalTpsTicks;
+        private int tpsWarningCooldown;
 
         private ChainJob(ServerLevel level, ServerPlayer player, BlockPos origin, Block targetBlock,
                 Direction face, ChainMode mode, DropBuffer drops) {
@@ -450,6 +481,10 @@ public final class ChainEvents {
                 return;
             }
 
+            if (!updateTpsSafety()) {
+                return;
+            }
+
             if (mode.isArea()) {
                 tickArea();
             } else if (sparseBlast) {
@@ -462,16 +497,20 @@ public final class ChainEvents {
         private void tickGraph() {
             int checks = 0;
             int breaks = 0;
+            int checkLimit = mode.isBlast() ? effectiveBlastSearchChecks() : SEARCH_CHECKS_PER_TICK;
             int breakLimit = mode.isBlast() ? Config.MAX_BLAST_BLOCKS_PER_TICK.get()
                     : mode == ChainMode.NORMAL ? Config.MAX_NORMAL_BLOCKS_PER_TICK.get()
                     : BLOCK_BREAKS_PER_TICK;
-            while (checks < SEARCH_CHECKS_PER_TICK && breaks < breakLimit
+            if (mode.isBlast()) {
+                breakLimit = effectiveBlastBreakLimit();
+            }
+            while (checks < checkLimit && breaks < breakLimit
                     && !frontier.isEmpty() && brokenCount < totalLimit
                     && HELD_KEYS.contains(player.getUUID())) {
                 SearchNode node = frontier.removeFirst();
                 int centerChecks = 0;
                 while (centerChecks < SEARCH_CHECKS_PER_CENTER
-                        && checks < SEARCH_CHECKS_PER_TICK
+                        && checks < checkLimit
                         && breaks < breakLimit
                         && node.nextOffset() < graphOffsets.size()) {
                     BlockPos offset = graphOffsets.get(node.nextOffset());
@@ -547,8 +586,8 @@ public final class ChainEvents {
         private void tickSparseBlast() {
             int breaks = 0;
             int scannedCenters = 0;
-            int breakLimit = Config.MAX_BLAST_BLOCKS_PER_TICK.get();
-            int centerLimit = Math.max(32, breakLimit);
+            int breakLimit = effectiveBlastBreakLimit();
+            int centerLimit = Math.max(1, breakLimit);
             while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUUID())) {
                 while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
                     scanSparseCenter(sparseCenters.removeFirst());
@@ -576,6 +615,59 @@ public final class ChainEvents {
                     || brokenCount >= totalLimit) {
                 finish();
             }
+        }
+
+        private boolean updateTpsSafety() {
+            if (!mode.isBlast()) {
+                return true;
+            }
+
+            if (tpsWarningCooldown > 0) {
+                tpsWarningCooldown--;
+            }
+
+            double tps = getServerTps(level);
+            if (tps < TPS_CRITICAL_THRESHOLD) {
+                criticalTpsTicks++;
+                if (criticalTpsTicks == 1) {
+                    showTpsMessage(player, "message.veinminerplus.tps_paused", tps);
+                }
+                if (criticalTpsTicks >= TPS_CRITICAL_TICKS_TO_STOP) {
+                    showTpsMessage(player, "message.veinminerplus.tps_stopped", tps);
+                    finish();
+                }
+                return false;
+            }
+
+            criticalTpsTicks = 0;
+            if (tps < TPS_WARNING_THRESHOLD && tpsWarningCooldown == 0) {
+                showTpsMessage(player, "message.veinminerplus.tps_warning", tps);
+                tpsWarningCooldown = TPS_WARNING_COOLDOWN_TICKS;
+            }
+            return true;
+        }
+
+        private int effectiveBlastBreakLimit() {
+            int configured = Config.MAX_BLAST_BLOCKS_PER_TICK.get();
+            double tps = getServerTps(level);
+            if (tps < TPS_WARNING_THRESHOLD) {
+                return Math.max(1, configured / 4);
+            }
+            if (tps < TPS_RECOVERY_THRESHOLD) {
+                return Math.max(1, configured / 2);
+            }
+            return configured;
+        }
+
+        private int effectiveBlastSearchChecks() {
+            double tps = getServerTps(level);
+            if (tps < TPS_WARNING_THRESHOLD) {
+                return SEARCH_CHECKS_PER_TICK / 4;
+            }
+            if (tps < TPS_RECOVERY_THRESHOLD) {
+                return SEARCH_CHECKS_PER_TICK / 2;
+            }
+            return SEARCH_CHECKS_PER_TICK;
         }
 
         private void scanSparseCenter(BlockPos center) {

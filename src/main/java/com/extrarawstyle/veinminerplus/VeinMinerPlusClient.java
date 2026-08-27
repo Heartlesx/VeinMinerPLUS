@@ -91,7 +91,8 @@ public final class VeinMinerPlusClient {
     }
 
     private static void syncKeyState() {
-        boolean held = isChainKeyActive(Minecraft.getInstance()) && !Screen.hasShiftDown();
+        Minecraft minecraft = Minecraft.getInstance();
+        boolean held = isChainKeyActive(minecraft) && !Screen.hasShiftDown();
         if (held == keyStateSent) {
             return;
         }
@@ -110,11 +111,15 @@ public final class VeinMinerPlusClient {
     }
 
     private static boolean isModeSelectorOpen() {
-        return isChainKeyActive(Minecraft.getInstance()) && Screen.hasShiftDown();
+        Minecraft minecraft = Minecraft.getInstance();
+        return isChainKeyActive(minecraft) && Screen.hasShiftDown();
     }
 
     private static boolean isChainKeyActive(Minecraft minecraft) {
-        return minecraft.player != null && minecraft.level != null && minecraft.screen == null && CHAIN_KEY.isDown();
+        return minecraft.player != null
+                && minecraft.level != null
+                && minecraft.screen == null
+                && CHAIN_KEY.isDown();
     }
 
     private static void renderCurrentMode(GuiGraphics graphics, Minecraft minecraft) {
@@ -136,7 +141,8 @@ public final class VeinMinerPlusClient {
         for (int index = 0; index < modes.length; index++) {
             ChainMode mode = modes[index];
             int color = mode == clientMode ? 0xFFFFFF55 : 0xFFFFFFFF;
-            graphics.drawString(minecraft.font, Component.translatable(mode.translationKey()), 8, 8 + index * lineHeight, color);
+            graphics.drawString(minecraft.font, Component.translatable(mode.translationKey()), 8,
+                    8 + index * lineHeight, color);
         }
     }
 }

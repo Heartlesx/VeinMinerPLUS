@@ -17,7 +17,17 @@
   "veinminerplus.configuration.maxBlastBlocks": "爆破连锁最大方块数",
   "veinminerplus.configuration.maxBlastBlocksPerTick": "爆破模式每 Tick 最大挖掘数",
   "veinminerplus.configuration.blastSearchDistance": "爆破连锁间隔距离（3-128）",
+  "veinminerplus.configuration.noHungerCost": "连锁挖掘不消耗饱食度",
+  "veinminerplus.configuration.maxNormalBlocks.tooltip": "普通连锁和范围连锁一次任务最多挖掘的方块数。范围：32-32767。",
+  "veinminerplus.configuration.maxNormalBlocksPerTick.tooltip": "普通连锁每个服务端 Tick 最多挖掘的方块数。范围：1-384。",
+  "veinminerplus.configuration.maxBlastBlocks.tooltip": "爆破模式一次任务最多挖掘的方块数。范围：32-32767。",
+  "veinminerplus.configuration.maxBlastBlocksPerTick.tooltip": "爆破模式每个服务端 Tick 最多挖掘的方块数。TPS 较低时会自动降低。范围：1-512。",
+  "veinminerplus.configuration.blastSearchDistance.tooltip": "爆破模式从每个已发现方块向外搜索的最大欧氏距离。范围：3-128。",
+  "veinminerplus.configuration.noHungerCost.tooltip": "开启后，自动连锁挖掘的方块不会消耗饱食度；默认关闭。玩家手动挖掘的第一个方块仍遵循原版规则。",
   "message.veinminerplus.progress": "连锁挖掘：%s 个方块",
+  "message.veinminerplus.tps_warning": "连锁爆破已自动降速（当前 TPS：%s）",
+  "message.veinminerplus.tps_paused": "TPS 过低，连锁爆破已暂停（当前 TPS：%s）",
+  "message.veinminerplus.tps_stopped": "TPS 持续过低，连锁爆破已停止，掉落已结算（当前 TPS：%s）",
   "commands.veinminerplus.blast_speed": "爆破速度：每 tick %s 个方块（范围 %s-%s）",
   "commands.veinminerplus.blast_distance": "爆破搜索半径：%s 格（范围 %s-%s）"
 }

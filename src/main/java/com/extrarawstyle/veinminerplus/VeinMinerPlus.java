@@ -19,6 +19,5 @@ public class VeinMinerPlus {
         modEventBus.addListener(NetworkHandler::register);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         NeoForge.EVENT_BUS.register(new ChainEvents());
-        NeoForge.EVENT_BUS.register(new CommandEvents());
     }
 }

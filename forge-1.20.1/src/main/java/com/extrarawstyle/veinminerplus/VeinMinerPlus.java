@@ -18,6 +18,5 @@ public class VeinMinerPlus {
         NetworkHandler.register();
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         MinecraftForge.EVENT_BUS.register(new ChainEvents());
-        MinecraftForge.EVENT_BUS.register(new CommandEvents());
     }
 }

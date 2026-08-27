@@ -92,7 +92,8 @@ public final class VeinMinerPlusClient {
         for (int index = 0; index < modes.length; index++) {
             ChainMode mode = modes[index];
             int color = mode == clientMode ? 0xFFFFFF55 : 0xFFFFFFFF;
-            graphics.drawString(minecraft.font, Component.translatable(mode.translationKey()), 8, 8 + index * lineHeight, color);
+            graphics.drawString(minecraft.font, Component.translatable(mode.translationKey()), 8,
+                    8 + index * lineHeight, color);
         }
     }
 }

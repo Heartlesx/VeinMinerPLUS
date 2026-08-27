@@ -1,6 +1,6 @@
 # VeinMinerPlus Project Handoff
 
-Last updated: 2026-08-26
+Last updated: 2026-08-27
 
 ## Read First
 
@@ -23,8 +23,8 @@ All released artifacts are retained under `G:\Codex项目\连锁mod\mods`.
 
 | Target | Current version | Artifact | SHA-256 |
 | --- | --- | --- | --- |
-| NeoForge 1.21.1 | `1.1.3` | `veinminerplus-1.1.3.jar` | `610A8767B198D84B23D3E5CFE43B753FFDD9B5A5411C3D40FA5D31C485865B67` |
-| Forge 1.20.1 | `1.1.5-forge` | `veinminerplus-1.1.5-forge.jar` | `12475E269FCE27F630E9A75670862A53BF4179EB0355748A9B15A6B26F6B7E2D` |
+| NeoForge 1.21.1 | `1.1.6` | `veinminerplus-1.1.6.jar` | `BEFC1126F67FD9A03D374026EB38169D5A1D8E68E4B9417FFFFBF41E7063EA9B` |
+| Forge 1.20.1 | `1.1.8-forge` | `veinminerplus-1.1.8-forge.jar` | `AC30F0F7C29BDED34F375C8D1849906BF5BE6DCEA438701E1E1B3A89F4DDCF57` |
 
 Increment the relevant `mod_version` for every further functional or metadata change. Preserve old JARs and do not overwrite them.
 
@@ -47,9 +47,12 @@ Both builds also contain `ChainMode.java`, `Config.java`, `NetworkHandler.java`,
 - Containers, menu blocks, and blocks exposing an item-handler capability are excluded.
 - A chain starts only after the player actually breaks the first eligible block while the grave-accent key is held.
 - Releasing the key ends the current job and settles its buffered drops.
-- Hold `Shift + ~` and use the mouse wheel to select a mode. The selected mode is shown in the top-left HUD.
+- Hold `~` to show the current mode. Hold `Shift + ~` to show all modes and use the mouse wheel to select one; the selected mode is highlighted in the HUD.
 - All chained blocks use `player.gameMode.destroyBlock(pos)` to preserve the normal player-break path, including drops, enchantments, durability, experience, and events.
 - Searches and destruction are tick-bounded to avoid blocking server TPS.
+- Unbreakable blocks such as bedrock are excluded from every chain mode.
+- Blast jobs warn and throttle below 12 TPS, pause below 8 TPS, and stop after 20 consecutive critical ticks while settling buffered drops.
+- `noHungerCost` is disabled by default; when enabled, automatically chained blocks do not add hunger exhaustion while the manually mined first block keeps vanilla behavior.
 
 ### Empty Hand and Wood Changes
 
@@ -80,8 +83,9 @@ The common config file is `config/veinminerplus-common.toml` in each running ins
 - `maxNormalBlocks`: normal and area limit, range `32-32767`, default `1024`.
 - `maxNormalBlocksPerTick`: normal blocks broken per tick, range `1-384`, default `8`.
 - `maxBlastBlocks`: blast limit, range `32-32767`, default `32767`.
-- `maxBlastBlocksPerTick`: blast blocks broken per tick, range `1-256`, default `32`.
-- `blastSearchDistance`: blast Manhattan search distance, range `3-32`, default `20`.
+- `maxBlastBlocksPerTick`: blast blocks broken per tick, range `1-512`, default `64`.
+- `blastSearchDistance`: blast Euclidean search distance, range `3-128`, default `20`.
+- `noHungerCost`: disable hunger exhaustion for automatically chained blocks, default `false`.
 
 ## Forge 1.20.1 Notes
 
@@ -92,6 +96,7 @@ The common config file is `config/veinminerplus-common.toml` in each running ins
 - Version `1.1.2-forge` failed to load because client input listeners were wrongly scanned on the Mod bus. This was fixed in `1.1.3-forge`.
 - Version `1.1.3-forge` lacked `pack.mcmeta`, causing missing translations and an invalid `ResourcePackInfo` warning. This was fixed in `1.1.4-forge`.
 - `1.1.5-forge` adds empty-hand chaining and removes the axe-only restriction for blast logs.
+- `1.1.8-forge` adds the current HUD, bedrock protection, TPS safety, optional no-hunger chain mining, and explicit Configured translations.
 - FTB Ultimine is installed in Monifactory. The user will disable it or change its keybinding; do not add compatibility handling unless requested.
 
 ## Build Commands
@@ -126,8 +131,8 @@ After either build, copy only the new version to `G:\Codex项目\连锁mod\mods`
 
 ## Validation Status
 
-- NeoForge `1.1.3`: Java 21 full build completed and output hash matched. Latest gameplay behavior has not been tested in an instance.
-- Forge `1.1.5-forge`: Java 17 full build and `reobfJar` completed and output hash matched. It has not been launched or tested in Monifactory.
+- NeoForge `1.1.6`: Java 21 full build completed and output hash matched; gameplay behavior has not been tested in an instance.
+- Forge `1.1.8-forge`: Java 17 full build and `reobfJar` completed and output hash matched; it has not been launched or tested in Monifactory.
 - A successful build is not evidence of in-game correctness.
 
 The next manual Forge test should use only the latest VeinMinerPlus Forge JAR and verify:
@@ -139,6 +144,9 @@ The next manual Forge test should use only the latest VeinMinerPlus Forge JAR an
 5. Blast ores detects Monifactory ores tagged `forge:ores`.
 6. Releasing the key, reaching a limit, and natural search completion settle merged drops and experience at the player without source-location item markers.
 7. FTB Ultimine is disabled or rebound before key-conflict conclusions are drawn.
+8. Blast any does not break bedrock or other unbreakable blocks.
+9. Low-TPS warnings, throttling, pausing, and safe job termination behave as expected during a blast job.
+10. `noHungerCost` defaults to false and suppresses exhaustion only for automatically chained blocks when enabled.
 
 ## Development Constraints
 
