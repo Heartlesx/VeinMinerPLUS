@@ -58,7 +58,7 @@ public final class ChainEvents {
     private static final int TPS_WARNING_COOLDOWN_TICKS = 100;
 
     private static final TagKey<Block> ORE_BLOCKS = TagKey.create(Registries.BLOCK,
-            ResourceLocation.withDefaultNamespace("ores"));
+            ResourceLocation.fromNamespaceAndPath("minecraft", "ores"));
     private static final TagKey<Block> FORGE_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath("forge", "ores"));
     private static final TagKey<Block> COMMON_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
