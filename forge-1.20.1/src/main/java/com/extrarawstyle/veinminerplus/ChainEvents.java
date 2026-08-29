@@ -71,7 +71,7 @@ public final class ChainEvents {
     private static final Set<UUID> PENDING_JOBS = new HashSet<>();
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
-    private static final ThreadLocal<DropBuffer> CAPTURING_DROPS = new ThreadLocal<>();
+    private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
 
     @SubscribeEvent
@@ -138,15 +138,17 @@ public final class ChainEvents {
             return;
         }
 
-        DropBuffer drops = CAPTURING_DROPS.get();
-        if (drops != null) {
-            captureEntity(event, drops);
+        CaptureContext capture = CAPTURING_DROPS.get();
+        if (capture != null) {
+            if (event.getEntity().blockPosition().equals(capture.origin())) {
+                captureEntity(event, capture.drops());
+            }
             return;
         }
 
         for (Map.Entry<UUID, DropBuffer> entry : PENDING_DROPS.entrySet()) {
             BlockPos origin = PENDING_DROP_ORIGINS.get(entry.getKey());
-            if (origin != null && event.getEntity().blockPosition().distSqr(origin) <= 9.0D) {
+            if (origin != null && event.getEntity().blockPosition().equals(origin)) {
                 captureEntity(event, entry.getValue());
                 return;
             }
@@ -254,9 +256,9 @@ public final class ChainEvents {
         // Use the same server-side entry point as a real player break. This keeps
         // BlockEvent, drops, tool damage, block entities, and client updates in sync.
         ChainJob job = ACTIVE_JOBS.get(player.getUUID());
-        DropBuffer previous = CAPTURING_DROPS.get();
+        CaptureContext previous = CAPTURING_DROPS.get();
         if (job != null) {
-            CAPTURING_DROPS.set(job.drops);
+            CAPTURING_DROPS.set(new CaptureContext(job.drops, pos.immutable()));
         }
         try {
             if (!Config.NO_HUNGER_COST.get()) {
@@ -766,5 +768,8 @@ public final class ChainEvents {
     }
 
     private record BreakFace(BlockPos pos, Direction face) {
+    }
+
+    private record CaptureContext(DropBuffer drops, BlockPos origin) {
     }
 }
