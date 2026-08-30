@@ -4,3 +4,4 @@ VeinMinerPlus
 此mod为初版，可能会有重大BUG！
 流程破坏性模组！请你视情况而添加！
 反馈群1018656285
+分支版：github.com/GuHanDuRen/VeinMinerPLUS/releases/tag/VeinMinerPLUS
