@@ -61,6 +61,12 @@ public final class ChainEvents {
             ResourceLocation.withDefaultNamespace("ores"));
     private static final TagKey<Block> COMMON_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath("c", "ores"));
+    private static final TagKey<Block> ALLTHEMODIUM_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath("c", "ores/allthemodium"));
+    private static final TagKey<Block> VIBRANIUM_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath("c", "ores/vibranium"));
+    private static final TagKey<Block> UNOBTAINIUM_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath("c", "ores/unobtainium"));
     private static final List<BlockPos> NORMAL_OFFSETS = createNormalOffsets();
     private static final Map<Integer, List<BlockPos>> BLAST_OFFSETS = new ConcurrentHashMap<>();
     private static final Map<UUID, ChainMode> PLAYER_MODES = new HashMap<>();
@@ -217,7 +223,10 @@ public final class ChainEvents {
     }
 
     private static boolean isOre(BlockState state) {
-        if (state.is(ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS)) {
+        if (state.is(ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS)
+                || state.is(ALLTHEMODIUM_ORE_BLOCKS)
+                || state.is(VIBRANIUM_ORE_BLOCKS)
+                || state.is(UNOBTAINIUM_ORE_BLOCKS)) {
             return true;
         }
 
@@ -401,7 +410,7 @@ public final class ChainEvents {
         private final boolean sparseBlast;
         private final DropBuffer drops;
         private int brokenCount = 1;
-        private int areaDepth = 1;
+        private int areaDepth;
         private int areaIndex;
         private int criticalTpsTicks;
         private int tpsWarningCooldown;

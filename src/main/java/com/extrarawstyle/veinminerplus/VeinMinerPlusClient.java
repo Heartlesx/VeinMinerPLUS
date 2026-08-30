@@ -43,6 +43,10 @@ public final class VeinMinerPlusClient {
         event.register(CHAIN_KEY);
     }
 
+    static void openConfigScreen(NetworkHandler.ConfigSnapshotPayload config) {
+        Minecraft.getInstance().setScreen(new VeinMinerConfigScreen(config));
+    }
+
     @SubscribeEvent
     public static void onKey(InputEvent.Key event) {
         if (!CHAIN_KEY.matches(event.getKey(), event.getScanCode())) {

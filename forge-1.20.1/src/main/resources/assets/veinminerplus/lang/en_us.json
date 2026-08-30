@@ -9,7 +9,7 @@
   "chain.veinminerplus.blast_any": "Blast: any harvestable block",
   "chain.veinminerplus.blast_logs": "Blast: logs",
   "message.veinminerplus.broken": "VeinMiner: %s blocks",
-  "veinminerplus.configuration.title": "VeinMinerPlus Settings",
+  "veinminerplus.configuration.title": "VeinMinerPlus Server Configuration",
   "veinminerplus.configuration.section.veinminerplus.common.toml": "Chain mining settings",
   "veinminerplus.configuration.section.veinminerplus.common.toml.title": "Chain mining settings",
   "veinminerplus.configuration.maxNormalBlocks": "Maximum normal chain blocks",
@@ -29,5 +29,17 @@
   "message.veinminerplus.tps_paused": "TPS is too low; blast chain mining is paused (current TPS: %s)",
   "message.veinminerplus.tps_stopped": "TPS stayed too low; blast chain mining stopped and drops were settled (current TPS: %s)",
   "commands.veinminerplus.blast_speed": "Blast speed: %s blocks per tick (range %s-%s)",
-  "commands.veinminerplus.blast_distance": "Blast search radius: %s blocks (range %s-%s)"
+  "commands.veinminerplus.blast_distance": "Blast search radius: %s blocks (range %s-%s)",
+  "commands.veinminerplus.gui": "Open the VeinMinerPlus server configuration screen",
+  "message.veinminerplus.config_permission": "You must enable cheats or have server administrator permissions to edit VeinMinerPlus configuration.",
+  "message.veinminerplus.config_saved": "VeinMinerPlus configuration saved.",
+  "veinminerplus.configuration.subtitle": "Server rules; changes affect all players",
+  "veinminerplus.configuration.section.common": "Normal / Area chain",
+  "veinminerplus.configuration.section.blast": "Blast chain",
+  "veinminerplus.configuration.section.player": "Player behavior",
+  "veinminerplus.configuration.noHungerCost.value": "No hunger cost for chain mining: %s",
+  "veinminerplus.configuration.save": "Save",
+  "veinminerplus.configuration.reset": "Reset defaults",
+  "veinminerplus.configuration.invalid": "Enter a valid integer.",
+  "veinminerplus.configuration.range": "Value must be between %s and %s."
 }

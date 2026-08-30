@@ -9,7 +9,7 @@
   "chain.veinminerplus.blast_any": "爆破连锁：所有可挖方块",
   "chain.veinminerplus.blast_logs": "爆破伐木：原木",
   "message.veinminerplus.broken": "连锁挖掘：%s 个方块",
-  "veinminerplus.configuration.title": "VeinMinerPlus 设置",
+  "veinminerplus.configuration.title": "VeinMinerPlus 服务端配置",
   "veinminerplus.configuration.section.veinminerplus.common.toml": "连锁挖掘设置",
   "veinminerplus.configuration.section.veinminerplus.common.toml.title": "连锁挖掘设置",
   "veinminerplus.configuration.maxNormalBlocks": "普通连锁最大方块数",
@@ -29,5 +29,17 @@
   "message.veinminerplus.tps_paused": "TPS 过低，连锁爆破已暂停（当前 TPS：%s）",
   "message.veinminerplus.tps_stopped": "TPS 持续过低，连锁爆破已停止，掉落已结算（当前 TPS：%s）",
   "commands.veinminerplus.blast_speed": "爆破速度：每 tick %s 个方块（范围 %s-%s）",
-  "commands.veinminerplus.blast_distance": "爆破搜索半径：%s 格（范围 %s-%s）"
+  "commands.veinminerplus.blast_distance": "爆破搜索半径：%s 格（范围 %s-%s）",
+  "commands.veinminerplus.gui": "打开 VeinMinerPlus 服务端配置界面",
+  "message.veinminerplus.config_permission": "你需要开启作弊或拥有服务器管理员权限才能修改 VeinMinerPlus 配置。",
+  "message.veinminerplus.config_saved": "VeinMinerPlus 配置已保存。",
+  "veinminerplus.configuration.subtitle": "服务器端规则，修改后会影响所有玩家",
+  "veinminerplus.configuration.section.common": "普通 / 范围连锁",
+  "veinminerplus.configuration.section.blast": "爆破连锁",
+  "veinminerplus.configuration.section.player": "玩家行为",
+  "veinminerplus.configuration.noHungerCost.value": "连锁挖掘不消耗饱食度：%s",
+  "veinminerplus.configuration.save": "保存",
+  "veinminerplus.configuration.reset": "恢复默认",
+  "veinminerplus.configuration.invalid": "请输入有效的整数。",
+  "veinminerplus.configuration.range": "数值必须在 %s 到 %s 之间。"
 }

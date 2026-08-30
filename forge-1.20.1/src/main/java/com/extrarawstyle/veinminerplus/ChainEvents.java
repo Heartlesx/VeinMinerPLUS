@@ -63,6 +63,12 @@ public final class ChainEvents {
             ResourceLocation.fromNamespaceAndPath("forge", "ores"));
     private static final TagKey<Block> COMMON_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath("c", "ores"));
+    private static final TagKey<Block> ALLTHEMODIUM_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath("forge", "ores/allthemodium"));
+    private static final TagKey<Block> VIBRANIUM_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath("forge", "ores/vibranium"));
+    private static final TagKey<Block> UNOBTAINIUM_ORE_BLOCKS = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath("forge", "ores/unobtainium"));
     private static final List<BlockPos> NORMAL_OFFSETS = createNormalOffsets();
     private static final Map<Integer, List<BlockPos>> BLAST_OFFSETS = new ConcurrentHashMap<>();
     private static final Map<UUID, ChainMode> PLAYER_MODES = new HashMap<>();
@@ -216,7 +222,8 @@ public final class ChainEvents {
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
-        if (state.isAir() || state.getDestroySpeed(level, pos) < 0.0F || !level.mayInteract(player, pos)) {
+        if (state.isAir() || !level.mayInteract(player, pos)
+                || !isAtmOre(state) && state.getDestroySpeed(level, pos) < 0.0F) {
             return false;
         }
 
@@ -239,12 +246,21 @@ public final class ChainEvents {
     }
 
     private static boolean isOre(BlockState state) {
-        if (state.is(ORE_BLOCKS) || state.is(FORGE_ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS)) {
+        if (state.is(ORE_BLOCKS) || state.is(FORGE_ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS)
+                || state.is(ALLTHEMODIUM_ORE_BLOCKS)
+                || state.is(VIBRANIUM_ORE_BLOCKS)
+                || state.is(UNOBTAINIUM_ORE_BLOCKS)) {
             return true;
         }
 
         // Some mod packs do not add their ores to the shared ore tags.
-        return BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath().endsWith("_ore");
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        return id != null && id.getPath().endsWith("_ore");
+    }
+
+    private static boolean isAtmOre(BlockState state) {
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        return id != null && "allthemodium".equals(id.getNamespace()) && id.getPath().endsWith("_ore");
     }
 
     private static boolean breakOne(ServerLevel level, ServerPlayer player, BlockPos pos, Block targetBlock,
@@ -436,7 +452,7 @@ public final class ChainEvents {
         private final boolean sparseBlast;
         private final DropBuffer drops;
         private int brokenCount = 1;
-        private int areaDepth = 1;
+        private int areaDepth;
         private int areaIndex;
         private int criticalTpsTicks;
         private int tpsWarningCooldown;
@@ -587,13 +603,12 @@ public final class ChainEvents {
 
         private void tickSparseBlast() {
             int breaks = 0;
-            int scannedCenters = 0;
             int breakLimit = effectiveBlastBreakLimit();
             int centerLimit = Math.max(1, breakLimit);
             while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUUID())) {
-                while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
+                while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && centerLimit > 0) {
                     scanSparseCenter(sparseCenters.removeFirst());
-                    scannedCenters++;
+                    centerLimit--;
                 }
                 if (sparseTargets.isEmpty()) {
                     break;
@@ -630,13 +645,10 @@ public final class ChainEvents {
 
             double tps = getServerTps(level);
             if (tps < TPS_CRITICAL_THRESHOLD) {
-                criticalTpsTicks++;
+                // Pause while TPS is critical, but retain the job so it can resume after recovery.
+                criticalTpsTicks = Math.min(TPS_CRITICAL_TICKS_TO_STOP, criticalTpsTicks + 1);
                 if (criticalTpsTicks == 1) {
                     showTpsMessage(player, "message.veinminerplus.tps_paused", tps);
-                }
-                if (criticalTpsTicks >= TPS_CRITICAL_TICKS_TO_STOP) {
-                    showTpsMessage(player, "message.veinminerplus.tps_stopped", tps);
-                    finish();
                 }
                 return false;
             }
