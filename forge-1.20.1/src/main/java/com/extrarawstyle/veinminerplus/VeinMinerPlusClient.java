@@ -37,6 +37,11 @@ public final class VeinMinerPlusClient {
         Minecraft.getInstance().setScreen(new VeinMinerConfigScreen(config));
     }
 
+    static void resetSessionState() {
+        clientMode = ChainMode.NORMAL;
+        keyStateSent = false;
+    }
+
     static void syncKeyState() {
         boolean held = isChainKeyActive(Minecraft.getInstance()) && !Screen.hasShiftDown();
         if (held == keyStateSent) {

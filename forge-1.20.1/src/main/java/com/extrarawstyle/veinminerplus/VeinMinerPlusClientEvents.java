@@ -3,6 +3,7 @@ package com.extrarawstyle.veinminerplus;
 import org.lwjgl.glfw.GLFW;
 
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RenderGuiEvent;
 import net.minecraftforge.event.TickEvent;
@@ -12,6 +13,17 @@ import net.minecraftforge.fml.common.Mod;
 @Mod.EventBusSubscriber(modid = VeinMinerPlus.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE, value = Dist.CLIENT)
 public final class VeinMinerPlusClientEvents {
     private VeinMinerPlusClientEvents() {
+    }
+
+    @SubscribeEvent
+    public static void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
+        VeinMinerPlusClient.resetSessionState();
+        NetworkHandler.sendModeChange(VeinMinerPlusClient.clientMode);
+    }
+
+    @SubscribeEvent
+    public static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
+        VeinMinerPlusClient.resetSessionState();
     }
 
     @SubscribeEvent

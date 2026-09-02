@@ -17,6 +17,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
@@ -41,6 +42,18 @@ public final class VeinMinerPlusClient {
 
     private static void registerKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(CHAIN_KEY);
+    }
+
+    @SubscribeEvent
+    public static void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
+        clientMode = ChainMode.NORMAL;
+        NetworkHandler.sendModeChange(clientMode);
+    }
+
+    @SubscribeEvent
+    public static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
+        clientMode = ChainMode.NORMAL;
+        keyStateSent = false;
     }
 
     static void openConfigScreen(NetworkHandler.ConfigSnapshotPayload config) {
