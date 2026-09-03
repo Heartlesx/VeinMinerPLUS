@@ -33,6 +33,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.DoublePlantBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -74,6 +75,9 @@ public final class ChainEvents {
     private static final Map<UUID, ChainJob> ACTIVE_JOBS = new HashMap<>();
     private static final Set<UUID> PENDING_JOBS = new HashSet<>();
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
+    private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
+    private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
+    private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
 
     @SubscribeEvent
@@ -92,6 +96,8 @@ public final class ChainEvents {
         PLAYER_MODES.remove(id);
         HELD_KEYS.remove(id);
         PENDING_JOBS.remove(id);
+        PENDING_DROP_ORIGINS.remove(id);
+        PENDING_DOUBLE_PLANTS.remove(id);
         LAST_BREAK_FACES.remove(id);
     }
 
@@ -125,6 +131,8 @@ public final class ChainEvents {
         Direction face = breakFace != null && breakFace.pos().equals(target) ? breakFace.face() : Direction.UP;
         DropBuffer drops = new DropBuffer();
         PENDING_DROPS.put(player.getUUID(), drops);
+        PENDING_DROP_ORIGINS.put(player.getUUID(), target);
+        PENDING_DOUBLE_PLANTS.put(player.getUUID(), state.getBlock() instanceof DoublePlantBlock);
         PENDING_JOBS.add(player.getUUID());
         level.getServer().execute(() -> startAfterPrimaryBreak(level, player, target, state, face, mode,
                 drops));
@@ -132,14 +140,29 @@ public final class ChainEvents {
 
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onBlockDrops(BlockDropsEvent event) {
-        if (!(event.getBreaker() instanceof ServerPlayer player)) {
-            return;
+        DropBuffer drops = null;
+        if (event.getBreaker() instanceof ServerPlayer player) {
+            drops = PENDING_DROPS.get(player.getUUID());
+            if (drops == null) {
+                ChainJob job = ACTIVE_JOBS.get(player.getUUID());
+                drops = job == null ? null : job.drops;
+            }
         }
 
-        DropBuffer drops = PENDING_DROPS.get(player.getUUID());
+        CaptureContext capture = CAPTURING_DROPS.get();
+        if (drops == null && capture != null
+                && matchesDropPosition(event.getPos(), capture.origin(), capture.doublePlant())) {
+            drops = capture.drops();
+        }
         if (drops == null) {
-            ChainJob job = ACTIVE_JOBS.get(player.getUUID());
-            drops = job == null ? null : job.drops;
+            for (Map.Entry<UUID, DropBuffer> entry : PENDING_DROPS.entrySet()) {
+                BlockPos origin = PENDING_DROP_ORIGINS.get(entry.getKey());
+                boolean doublePlant = PENDING_DOUBLE_PLANTS.getOrDefault(entry.getKey(), false);
+                if (origin != null && matchesDropPosition(event.getPos(), origin, doublePlant)) {
+                    drops = entry.getValue();
+                    break;
+                }
+            }
         }
         if (drops == null) {
             return;
@@ -151,6 +174,11 @@ public final class ChainEvents {
         event.getDrops().clear();
         drops.addExperience(event.getDroppedExperience());
         event.setDroppedExperience(0);
+    }
+
+    private static boolean matchesDropPosition(BlockPos dropPosition, BlockPos origin, boolean doublePlant) {
+        return dropPosition.equals(origin)
+                || doublePlant && (dropPosition.equals(origin.above()) || dropPosition.equals(origin.below()));
     }
 
     @SubscribeEvent
@@ -183,6 +211,8 @@ public final class ChainEvents {
         UUID id = player.getUUID();
         PENDING_JOBS.remove(id);
         PENDING_DROPS.remove(id, drops);
+        PENDING_DROP_ORIGINS.remove(id, target);
+        PENDING_DOUBLE_PLANTS.remove(id);
 
         if (!level.isInWorldBounds(target) || level.getBlockState(target).is(originalState.getBlock())) {
             drops.clear();
@@ -200,7 +230,8 @@ public final class ChainEvents {
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
-        if (state.isAir() || state.getDestroySpeed(level, pos) < 0.0F || !level.mayInteract(player, pos)) {
+        if (state.isAir() || !level.mayInteract(player, pos)
+                || !isAtmOre(state) && state.getDestroySpeed(level, pos) < 0.0F) {
             return false;
         }
 
@@ -234,6 +265,11 @@ public final class ChainEvents {
         return BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath().endsWith("_ore");
     }
 
+    private static boolean isAtmOre(BlockState state) {
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        return id != null && "allthemodium".equals(id.getNamespace()) && id.getPath().endsWith("_ore");
+    }
+
     private static boolean breakOne(ServerLevel level, ServerPlayer player, BlockPos pos, Block targetBlock,
             ChainMode mode) {
         BlockState state = level.getBlockState(pos);
@@ -242,16 +278,29 @@ public final class ChainEvents {
         }
         // Use the same server-side entry point as a real player break. This keeps
         // BlockEvent, drops, tool damage, block entities, and client updates in sync.
-        if (!Config.NO_HUNGER_COST.get()) {
-            return player.gameMode.destroyBlock(pos);
+        ChainJob job = ACTIVE_JOBS.get(player.getUUID());
+        CaptureContext previous = CAPTURING_DROPS.get();
+        if (job != null) {
+            CAPTURING_DROPS.set(new CaptureContext(job.drops, pos.immutable(), state.getBlock() instanceof DoublePlantBlock));
         }
+        try {
+            if (!Config.NO_HUNGER_COST.get()) {
+                return player.gameMode.destroyBlock(pos);
+            }
 
-        float exhaustion = player.getFoodData().getExhaustionLevel();
-        boolean destroyed = player.gameMode.destroyBlock(pos);
-        if (destroyed) {
-            player.getFoodData().setExhaustion(exhaustion);
+            float exhaustion = player.getFoodData().getExhaustionLevel();
+            boolean destroyed = player.gameMode.destroyBlock(pos);
+            if (destroyed) {
+                player.getFoodData().setExhaustion(exhaustion);
+            }
+            return destroyed;
+        } finally {
+            if (previous == null) {
+                CAPTURING_DROPS.remove();
+            } else {
+                CAPTURING_DROPS.set(previous);
+            }
         }
-        return destroyed;
     }
 
     private static BlockState getBlockStateForSearch(ServerLevel level, BlockPos pos) {
@@ -742,5 +791,8 @@ public final class ChainEvents {
     }
 
     private record BreakFace(BlockPos pos, Direction face) {
+    }
+
+    private record CaptureContext(DropBuffer drops, BlockPos origin, boolean doublePlant) {
     }
 }

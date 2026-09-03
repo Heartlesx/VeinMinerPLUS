@@ -33,6 +33,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.DoublePlantBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -77,6 +78,7 @@ public final class ChainEvents {
     private static final Set<UUID> PENDING_JOBS = new HashSet<>();
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
+    private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
 
@@ -97,6 +99,7 @@ public final class ChainEvents {
         HELD_KEYS.remove(id);
         PENDING_JOBS.remove(id);
         PENDING_DROP_ORIGINS.remove(id);
+        PENDING_DOUBLE_PLANTS.remove(id);
         LAST_BREAK_FACES.remove(id);
     }
 
@@ -131,6 +134,7 @@ public final class ChainEvents {
         DropBuffer drops = new DropBuffer();
         PENDING_DROPS.put(player.getUUID(), drops);
         PENDING_DROP_ORIGINS.put(player.getUUID(), target);
+        PENDING_DOUBLE_PLANTS.put(player.getUUID(), state.getBlock() instanceof DoublePlantBlock);
         PENDING_JOBS.add(player.getUUID());
         level.getServer().execute(() -> startAfterPrimaryBreak(level, player, target, state, face, mode,
                 drops));
@@ -146,7 +150,7 @@ public final class ChainEvents {
 
         CaptureContext capture = CAPTURING_DROPS.get();
         if (capture != null) {
-            if (event.getEntity().blockPosition().equals(capture.origin())) {
+            if (matchesDropPosition(event.getEntity().blockPosition(), capture.origin(), capture.doublePlant())) {
                 captureEntity(event, capture.drops());
             }
             return;
@@ -154,11 +158,17 @@ public final class ChainEvents {
 
         for (Map.Entry<UUID, DropBuffer> entry : PENDING_DROPS.entrySet()) {
             BlockPos origin = PENDING_DROP_ORIGINS.get(entry.getKey());
-            if (origin != null && event.getEntity().blockPosition().equals(origin)) {
+            boolean doublePlant = PENDING_DOUBLE_PLANTS.getOrDefault(entry.getKey(), false);
+            if (origin != null && matchesDropPosition(event.getEntity().blockPosition(), origin, doublePlant)) {
                 captureEntity(event, entry.getValue());
                 return;
             }
         }
+    }
+
+    private static boolean matchesDropPosition(BlockPos dropPosition, BlockPos origin, boolean doublePlant) {
+        return dropPosition.equals(origin)
+                || doublePlant && (dropPosition.equals(origin.above()) || dropPosition.equals(origin.below()));
     }
 
     private static void captureEntity(EntityJoinLevelEvent event, DropBuffer drops) {
@@ -205,6 +215,7 @@ public final class ChainEvents {
         PENDING_JOBS.remove(id);
         PENDING_DROPS.remove(id, drops);
         PENDING_DROP_ORIGINS.remove(id, target);
+        PENDING_DOUBLE_PLANTS.remove(id);
 
         if (!level.isInWorldBounds(target) || level.getBlockState(target).is(originalState.getBlock())) {
             drops.clear();
@@ -274,7 +285,7 @@ public final class ChainEvents {
         ChainJob job = ACTIVE_JOBS.get(player.getUUID());
         CaptureContext previous = CAPTURING_DROPS.get();
         if (job != null) {
-            CAPTURING_DROPS.set(new CaptureContext(job.drops, pos.immutable()));
+            CAPTURING_DROPS.set(new CaptureContext(job.drops, pos.immutable(), state.getBlock() instanceof DoublePlantBlock));
         }
         try {
             if (!Config.NO_HUNGER_COST.get()) {
@@ -782,6 +793,6 @@ public final class ChainEvents {
     private record BreakFace(BlockPos pos, Direction face) {
     }
 
-    private record CaptureContext(DropBuffer drops, BlockPos origin) {
+    private record CaptureContext(DropBuffer drops, BlockPos origin, boolean doublePlant) {
     }
 }
