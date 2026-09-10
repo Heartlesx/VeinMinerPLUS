@@ -26,7 +26,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
-import net.minecraft.world.Container;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
@@ -34,12 +33,10 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.DoublePlantBlock;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
@@ -242,15 +239,7 @@ public final class ChainEvents {
             default -> state.getBlock() == targetBlock;
         };
         return matches
-                && !isContainer(level, pos, state)
                 && (player.isCreative() || EventHooks.doPlayerHarvestCheck(player, state, level, pos));
-    }
-
-    private static boolean isContainer(ServerLevel level, BlockPos pos, BlockState state) {
-        BlockEntity blockEntity = level.getBlockEntity(pos);
-        return blockEntity instanceof Container
-                || state.getMenuProvider(level, pos) != null
-                || level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null) != null;
     }
 
     private static boolean isOre(BlockState state) {

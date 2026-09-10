@@ -26,7 +26,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
-import net.minecraft.world.Container;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
@@ -34,10 +33,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.DoublePlantBlock;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraftforge.common.capabilities.ForgeCapabilities;
 import net.minecraftforge.common.ForgeHooks;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
@@ -245,15 +242,7 @@ public final class ChainEvents {
             default -> state.getBlock() == targetBlock;
         };
         return matches
-                && !isContainer(level, pos, state)
                 && (player.isCreative() || ForgeHooks.isCorrectToolForDrops(state, player));
-    }
-
-    private static boolean isContainer(ServerLevel level, BlockPos pos, BlockState state) {
-        BlockEntity blockEntity = level.getBlockEntity(pos);
-        return blockEntity instanceof Container
-                || state.getMenuProvider(level, pos) != null
-                || blockEntity != null && blockEntity.getCapability(ForgeCapabilities.ITEM_HANDLER).isPresent();
     }
 
     private static boolean isOre(BlockState state) {
