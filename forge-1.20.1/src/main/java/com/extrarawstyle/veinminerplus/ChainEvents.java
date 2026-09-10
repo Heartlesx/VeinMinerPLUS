@@ -231,7 +231,7 @@ public final class ChainEvents {
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
         if (state.isAir() || !level.mayInteract(player, pos)
-                || !isAtmOre(state) && state.getDestroySpeed(level, pos) < 0.0F) {
+                || !isAllthemodiumBlock(state) && state.getDestroySpeed(level, pos) < 0.0F) {
             return false;
         }
 
@@ -258,9 +258,12 @@ public final class ChainEvents {
         return id != null && id.getPath().endsWith("_ore");
     }
 
-    private static boolean isAtmOre(BlockState state) {
+    // Allthemodium registers its ore and ancient stone sets with a negative destroy
+    // speed while overriding getDestroyProgress, so players can still mine them.
+    // Reading that negative value as "unbreakable" would keep them out of chains.
+    private static boolean isAllthemodiumBlock(BlockState state) {
         ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
-        return id != null && "allthemodium".equals(id.getNamespace()) && id.getPath().endsWith("_ore");
+        return id != null && "allthemodium".equals(id.getNamespace());
     }
 
     private static boolean breakOne(ServerLevel level, ServerPlayer player, BlockPos pos, Block targetBlock,
