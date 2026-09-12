@@ -31,8 +31,11 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.DoublePlantBlock;
+import net.minecraft.world.level.block.GameMasterBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.bus.api.EventPriority;
@@ -49,6 +52,7 @@ public final class ChainEvents {
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
     private static final int BLOCK_BREAKS_PER_TICK = 8;
+    private static final int PENDING_SEED_LIMIT = 256;
     private static final double TPS_WARNING_THRESHOLD = 12.0D;
     private static final double TPS_CRITICAL_THRESHOLD = 8.0D;
     private static final double TPS_RECOVERY_THRESHOLD = 16.0D;
@@ -76,6 +80,7 @@ public final class ChainEvents {
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
+    private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
 
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
@@ -95,6 +100,7 @@ public final class ChainEvents {
         PENDING_JOBS.remove(id);
         PENDING_DROP_ORIGINS.remove(id);
         PENDING_DOUBLE_PLANTS.remove(id);
+        PENDING_SEEDS.remove(id);
         LAST_BREAK_FACES.remove(id);
     }
 
@@ -112,31 +118,55 @@ public final class ChainEvents {
                 || !(event.getPlayer() instanceof ServerPlayer player)
                 || !HELD_KEYS.contains(player.getUUID())
                 || ACTIVE_JOBS.containsKey(player.getUUID())
-                || PENDING_JOBS.contains(player.getUUID())
                 || !(event.getLevel() instanceof ServerLevel level)) {
             return;
         }
 
+        UUID id = player.getUUID();
         BlockPos target = event.getPos().immutable();
         BlockState state = event.getState();
-        ChainMode mode = PLAYER_MODES.getOrDefault(player.getUUID(), ChainMode.NORMAL);
+
+        List<BlockPos> seeds = PENDING_SEEDS.get(id);
+        if (seeds != null) {
+            // One player action, but a mod such as Just Dire Things breaks a whole area per
+            // action and fires this event for every block of it. Starting the chain from a
+            // single block inside that area would trap it: all of its neighbours are already
+            // air, so the search can never reach the untouched blocks around the area.
+            // Collect the whole area instead, so the chain starts from its edge.
+            if (seeds.size() < PENDING_SEED_LIMIT) {
+                seeds.add(target);
+            }
+            return;
+        }
+        if (PENDING_JOBS.contains(id)) {
+            return;
+        }
+
+        ChainMode mode = PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL);
         if (!isEligible(level, player, target, state, state.getBlock(), mode)) {
             return;
         }
 
-        BreakFace breakFace = LAST_BREAK_FACES.get(player.getUUID());
+        BreakFace breakFace = LAST_BREAK_FACES.get(id);
         Direction face = breakFace != null && breakFace.pos().equals(target) ? breakFace.face() : Direction.UP;
         DropBuffer drops = new DropBuffer();
-        PENDING_DROPS.put(player.getUUID(), drops);
-        PENDING_DROP_ORIGINS.put(player.getUUID(), target);
-        PENDING_DOUBLE_PLANTS.put(player.getUUID(), state.getBlock() instanceof DoublePlantBlock);
-        PENDING_JOBS.add(player.getUUID());
-        level.getServer().execute(() -> startAfterPrimaryBreak(level, player, target, state, face, mode,
-                drops));
+        List<BlockPos> pendingSeeds = new ArrayList<>();
+        pendingSeeds.add(target);
+        PENDING_DROPS.put(id, drops);
+        PENDING_DROP_ORIGINS.put(id, target);
+        PENDING_DOUBLE_PLANTS.put(id, state.getBlock() instanceof DoublePlantBlock);
+        PENDING_JOBS.add(id);
+        PENDING_SEEDS.put(id, pendingSeeds);
+        level.getServer().execute(() -> startAfterPrimaryBreak(level, player, target, state, face, mode, drops,
+                pendingSeeds));
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onBlockDrops(BlockDropsEvent event) {
+        if (event.isCanceled()) {
+            // Another mod (e.g. Just Dire Things) already took over these drops.
+            return;
+        }
         DropBuffer drops = null;
         if (event.getBreaker() instanceof ServerPlayer player) {
             drops = PENDING_DROPS.get(player.getUUID());
@@ -204,12 +234,13 @@ public final class ChainEvents {
     }
 
     private static void startAfterPrimaryBreak(ServerLevel level, ServerPlayer player, BlockPos target,
-            BlockState originalState, Direction face, ChainMode mode, DropBuffer drops) {
+            BlockState originalState, Direction face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
         UUID id = player.getUUID();
         PENDING_JOBS.remove(id);
         PENDING_DROPS.remove(id, drops);
         PENDING_DROP_ORIGINS.remove(id, target);
         PENDING_DOUBLE_PLANTS.remove(id);
+        PENDING_SEEDS.remove(id, seeds);
 
         if (!level.isInWorldBounds(target) || level.getBlockState(target).is(originalState.getBlock())) {
             drops.clear();
@@ -221,7 +252,7 @@ public final class ChainEvents {
             return;
         }
 
-        ACTIVE_JOBS.put(id, new ChainJob(level, player, target, originalState.getBlock(), face, mode, drops));
+        ACTIVE_JOBS.put(id, new ChainJob(level, player, target, originalState.getBlock(), face, mode, drops, seeds));
         showProgress(player, 1);
     }
 
@@ -276,13 +307,11 @@ public final class ChainEvents {
             CAPTURING_DROPS.set(new CaptureContext(job.drops, pos.immutable(), state.getBlock() instanceof DoublePlantBlock));
         }
         try {
-            if (!Config.NO_HUNGER_COST.get()) {
-                return player.gameMode.destroyBlock(pos);
-            }
-
             float exhaustion = player.getFoodData().getExhaustionLevel();
-            boolean destroyed = player.gameMode.destroyBlock(pos);
-            if (destroyed) {
+            boolean destroyed = isJustDireThingsTool(player)
+                    ? breakWithoutBreakEvent(level, player, pos, state)
+                    : player.gameMode.destroyBlock(pos);
+            if (destroyed && Config.NO_HUNGER_COST.get()) {
                 player.getFoodData().setExhaustion(exhaustion);
             }
             return destroyed;
@@ -293,6 +322,47 @@ public final class ChainEvents {
                 CAPTURING_DROPS.set(previous);
             }
         }
+    }
+
+    // Just Dire Things listens to BlockEvent.BreakEvent, runs its own hammer area
+    // break there and cancels the event. Firing that event for a chained block would
+    // hand the block to JDT instead: the chain counter would stick at 1 and every
+    // attempt would multiply into another 3x3/5x5/7x7 area break. Chained blocks are
+    // therefore broken directly, without the event. The manual hit still goes through
+    // the normal path, so JDT's own hammer behaviour is untouched.
+    private static boolean isJustDireThingsTool(ServerPlayer player) {
+        return player.getMainHandItem().getItem().getClass().getName()
+                .startsWith("com.direwolf20.justdirethings.");
+    }
+
+    // Mirrors ServerPlayerGameMode.destroyBlock aside from the BreakEvent.
+    private static boolean breakWithoutBreakEvent(ServerLevel level, ServerPlayer player, BlockPos pos,
+            BlockState state) {
+        Block block = state.getBlock();
+        if (block instanceof GameMasterBlock && !player.canUseGameMasterBlocks()) {
+            level.sendBlockUpdated(pos, state, state, 3);
+            return false;
+        }
+        GameType gameType = player.isCreative() ? GameType.CREATIVE : GameType.SURVIVAL;
+        if (player.blockActionRestricted(level, pos, gameType)) {
+            return false;
+        }
+
+        BlockEntity blockEntity = level.getBlockEntity(pos);
+        ItemStack tool = player.getMainHandItem();
+        BlockState remaining = block.playerWillDestroy(level, pos, state, player);
+        if (!level.removeBlock(pos, false)) {
+            return false;
+        }
+        block.destroy(level, pos, state);
+        if (!player.isCreative()) {
+            // isEligible already required a successful harvest check, so drops apply.
+            block.playerDestroy(level, player, pos, remaining, blockEntity, tool);
+            if (state.getDestroySpeed(level, pos) != 0.0F) {
+                tool.mineBlock(level, remaining, pos, player);
+            }
+        }
+        return true;
     }
 
     private static BlockState getBlockStateForSearch(ServerLevel level, BlockPos pos) {
@@ -457,7 +527,7 @@ public final class ChainEvents {
         private int tpsWarningCooldown;
 
         private ChainJob(ServerLevel level, ServerPlayer player, BlockPos origin, Block targetBlock,
-                Direction face, ChainMode mode, DropBuffer drops) {
+                Direction face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
             this.level = level;
             this.player = player;
             this.origin = origin;
@@ -480,13 +550,22 @@ public final class ChainEvents {
                     .thenComparingInt(BlockPos::getX)
                     .thenComparingInt(BlockPos::getZ));
 
-            examined.add(origin);
-            loadedChunks.put(chunkKey(origin), level.getChunk(origin.getX() >> 4, origin.getZ() >> 4));
-            if (!mode.isArea()) {
-                if (sparseBlast) {
-                    sparseCenters.addLast(origin);
-                } else {
-                    frontier.addLast(new SearchNode(origin, 0));
+            List<BlockPos> starts = new ArrayList<>();
+            starts.add(origin);
+            if (seeds != null) {
+                starts.addAll(seeds);
+            }
+            for (BlockPos start : starts) {
+                if (!examined.add(start)) {
+                    continue;
+                }
+                loadedChunks.put(chunkKey(start), level.getChunk(start.getX() >> 4, start.getZ() >> 4));
+                if (!mode.isArea()) {
+                    if (sparseBlast) {
+                        sparseCenters.addLast(start);
+                    } else {
+                        frontier.addLast(new SearchNode(start, 0));
+                    }
                 }
             }
         }
