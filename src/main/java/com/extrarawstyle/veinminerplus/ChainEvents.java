@@ -29,6 +29,7 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
@@ -41,6 +42,7 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.EventHooks;
+import net.neoforged.neoforge.event.TagsUpdatedEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -51,6 +53,7 @@ public final class ChainEvents {
     // Work is deliberately bounded so one large blast cannot monopolize the server thread.
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
+    private static final int SPARSE_SCANS_PER_TICK = 256;
     private static final int BLOCK_BREAKS_PER_TICK = 8;
     private static final int PENDING_SEED_LIMIT = 256;
     private static final double TPS_WARNING_THRESHOLD = 12.0D;
@@ -71,6 +74,7 @@ public final class ChainEvents {
             ResourceLocation.fromNamespaceAndPath("c", "ores/unobtainium"));
     private static final List<BlockPos> NORMAL_OFFSETS = createNormalOffsets();
     private static final Map<Integer, List<BlockPos>> BLAST_OFFSETS = new ConcurrentHashMap<>();
+    private static final Map<Block, Boolean> ORE_CACHE = new HashMap<>();
     private static final Map<UUID, ChainMode> PLAYER_MODES = new HashMap<>();
     private static final Set<UUID> HELD_KEYS = new HashSet<>();
     private static final Map<UUID, ChainJob> ACTIVE_JOBS = new HashMap<>();
@@ -215,6 +219,13 @@ public final class ChainEvents {
         }
     }
 
+    @SubscribeEvent
+    public void onTagsUpdated(TagsUpdatedEvent event) {
+        // A datapack reload can change which blocks count as ore, so cached lookups must
+        // not outlive it.
+        ORE_CACHE.clear();
+    }
+
     static void setKeyHeld(Player player, boolean held) {
         if (!(player instanceof ServerPlayer serverPlayer)) {
             return;
@@ -273,7 +284,19 @@ public final class ChainEvents {
                 && (player.isCreative() || EventHooks.doPlayerHarvestCheck(player, state, level, pos));
     }
 
+    // A blast search tests the same handful of blocks over and over, and the ore tags of a
+    // block cannot change during a session. Resolving them once per block instead of once
+    // per tested position takes five tag lookups and a registry lookup out of the hot path.
+    // The plain get() matters as much as the cache does: with computeIfAbsent alone, the
+    // lookup itself was the largest cost inside the scan.
     private static boolean isOre(BlockState state) {
+        Block block = state.getBlock();
+        Boolean cached = ORE_CACHE.get(block);
+        return cached != null ? cached : ORE_CACHE.computeIfAbsent(block, ChainEvents::computeIsOre);
+    }
+
+    private static boolean computeIsOre(Block block) {
+        BlockState state = block.defaultBlockState();
         if (state.is(ORE_BLOCKS) || state.is(COMMON_ORE_BLOCKS)
                 || state.is(ALLTHEMODIUM_ORE_BLOCKS)
                 || state.is(VIBRANIUM_ORE_BLOCKS)
@@ -282,7 +305,7 @@ public final class ChainEvents {
         }
 
         // Some mod packs do not add their ores to the shared ore tags.
-        return BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath().endsWith("_ore");
+        return BuiltInRegistries.BLOCK.getKey(block).getPath().endsWith("_ore");
     }
 
     // Allthemodium registers its ore and ancient stone sets with a negative destroy
@@ -293,12 +316,9 @@ public final class ChainEvents {
         return id != null && "allthemodium".equals(id.getNamespace());
     }
 
-    private static boolean breakOne(ServerLevel level, ServerPlayer player, BlockPos pos, Block targetBlock,
-            ChainMode mode) {
-        BlockState state = level.getBlockState(pos);
-        if (!isEligible(level, player, pos, state, targetBlock, mode)) {
-            return false;
-        }
+    // Every caller has already run isEligible on this exact state; doing it again here would
+    // repeat mayInteract and the harvest check for every single chained block.
+    private static boolean breakOne(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state) {
         // Use the same server-side entry point as a real player break. This keeps
         // BlockEvent, drops, tool damage, block entities, and client updates in sync.
         ChainJob job = ACTIVE_JOBS.get(player.getUUID());
@@ -437,7 +457,9 @@ public final class ChainEvents {
     }
 
     private static final class DropBuffer {
-        private final List<ItemStack> items = new ArrayList<>();
+        // Bucketing by item limits the scan below to stacks that could actually merge with
+        // the incoming drop.
+        private final Map<Item, List<ItemStack>> items = new HashMap<>();
         private int experience;
 
         private void add(ItemStack stack) {
@@ -445,12 +467,16 @@ public final class ChainEvents {
                 return;
             }
 
+            // Everything this can merge into holds the same item and components, so they all
+            // share one max stack size.
+            int maxStackSize = stack.getMaxStackSize();
             int remaining = stack.getCount();
-            for (ItemStack existing : items) {
+            List<ItemStack> stacks = items.computeIfAbsent(stack.getItem(), key -> new ArrayList<>());
+            for (ItemStack existing : stacks) {
                 if (!ItemStack.isSameItemSameComponents(existing, stack)) {
                     continue;
                 }
-                int space = existing.getMaxStackSize() - existing.getCount();
+                int space = maxStackSize - existing.getCount();
                 if (space <= 0) {
                     continue;
                 }
@@ -463,10 +489,9 @@ public final class ChainEvents {
                 }
             }
 
-            int maxStackSize = stack.getMaxStackSize();
             while (remaining > 0) {
                 int amount = Math.min(maxStackSize, remaining);
-                items.add(stack.copyWithCount(amount));
+                stacks.add(stack.copyWithCount(amount));
                 remaining -= amount;
             }
         }
@@ -484,11 +509,13 @@ public final class ChainEvents {
             double x = player.getX();
             double y = player.getY();
             double z = player.getZ();
-            for (ItemStack stack : items) {
-                ItemEntity item = new ItemEntity(level, x, y, z, stack);
-                item.setDefaultPickUpDelay();
-                item.setDeltaMovement(0.0D, 0.0D, 0.0D);
-                level.addFreshEntity(item);
+            for (List<ItemStack> stacks : items.values()) {
+                for (ItemStack stack : stacks) {
+                    ItemEntity item = new ItemEntity(level, x, y, z, stack);
+                    item.setDefaultPickUpDelay();
+                    item.setDeltaMovement(0.0D, 0.0D, 0.0D);
+                    level.addFreshEntity(item);
+                }
             }
             if (experience > 0) {
                 ExperienceOrb.award(level, player.position(), experience);
@@ -513,7 +540,10 @@ public final class ChainEvents {
         private final Deque<SearchNode> frontier = new ArrayDeque<>();
         private final Deque<BlockPos> sparseCenters = new ArrayDeque<>();
         private final PriorityQueue<BlockPos> sparseTargets;
-        private final Map<Long, List<BlockPos>> sparseChunkMatches = new HashMap<>();
+        // Chunk key -> section y -> matching positions inside that 16x16x16 section.
+        // Bucketing matters: a chunk column holds up to 24 sections, while a scan sphere
+        // only ever reaches a couple of them.
+        private final Map<Long, Map<Integer, List<BlockPos>>> sparseChunkMatches = new HashMap<>();
         private final Map<Long, LevelChunk> loadedChunks = new HashMap<>();
         private final List<BlockPos> graphOffsets;
         private final int totalLimit;
@@ -620,7 +650,7 @@ public final class ChainEvents {
 
                     BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
                     if (isEligible(level, player, candidate, state, targetBlock, mode)
-                            && breakOne(level, player, candidate, targetBlock, mode)) {
+                            && breakOne(level, player, candidate, state)) {
                         brokenCount++;
                         breaks++;
                         frontier.addLast(new SearchNode(candidate, 0));
@@ -664,7 +694,7 @@ public final class ChainEvents {
 
                 BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
                 if (isEligible(level, player, candidate, state, targetBlock, mode)
-                        && breakOne(level, player, candidate, targetBlock, mode)) {
+                        && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
                 }
@@ -683,7 +713,11 @@ public final class ChainEvents {
             int breaks = 0;
             int scannedCenters = 0;
             int breakLimit = effectiveBlastBreakLimit();
-            int centerLimit = Math.max(1, breakLimit);
+            // While targets are queued no scanning happens, so a finished vein can leave a
+            // large backlog of centres behind and every one of them would be walked in a
+            // single tick. Capping the number walked per tick bounds that worst case; the
+            // remainder is simply handled on the following ticks.
+            int centerLimit = Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
             while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUUID())) {
                 while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
                     scanSparseCenter(sparseCenters.removeFirst());
@@ -696,7 +730,7 @@ public final class ChainEvents {
                 BlockPos candidate = sparseTargets.poll();
                 BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
                 if (isEligible(level, player, candidate, state, targetBlock, mode)
-                        && breakOne(level, player, candidate, targetBlock, mode)) {
+                        && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
                     sparseCenters.addLast(candidate);
@@ -768,32 +802,55 @@ public final class ChainEvents {
 
         private void scanSparseCenter(BlockPos center) {
             int distance = Config.BLAST_SEARCH_DISTANCE.getAsInt();
+            long maxSquaredDistance = (long) distance * distance;
             int minChunkX = (center.getX() - distance) >> 4;
             int maxChunkX = (center.getX() + distance) >> 4;
             int minChunkZ = (center.getZ() - distance) >> 4;
             int maxChunkZ = (center.getZ() + distance) >> 4;
+            int minSectionY = (center.getY() - distance) >> 4;
+            int maxSectionY = (center.getY() + distance) >> 4;
 
             for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
                 for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
                     long key = chunkKey(chunkX, chunkZ);
-                    LevelChunk chunk = loadedChunks.get(key);
-                    if (chunk == null) {
-                        chunk = level.getChunk(chunkX, chunkZ);
-                        loadedChunks.put(key, chunk);
-                    }
+                    Map<Integer, List<BlockPos>> sections = sparseChunkMatches.get(key);
+                    if (sections == null) {
+                        LevelChunk chunk = loadedChunks.get(key);
+                        if (chunk == null) {
+                            chunk = level.getChunk(chunkX, chunkZ);
+                            loadedChunks.put(key, chunk);
+                        }
 
-                    List<BlockPos> matches = sparseChunkMatches.get(key);
-                    if (matches == null) {
-                        matches = new ArrayList<>();
-                        List<BlockPos> positions = matches;
+                        sections = new HashMap<>();
+                        Map<Integer, List<BlockPos>> buckets = sections;
                         chunk.findBlocks(this::matchesSparseState,
-                                (pos, state) -> positions.add(pos.immutable()));
-                        sparseChunkMatches.put(key, matches);
+                                (pos, state) -> buckets
+                                        .computeIfAbsent(pos.getY() >> 4, sectionY -> new ArrayList<>())
+                                        .add(pos.immutable()));
+                        sparseChunkMatches.put(key, sections);
                     }
 
-                    for (BlockPos pos : matches) {
-                        if (squaredDistance(center, pos) <= (long) distance * distance && examined.add(pos)) {
-                            sparseTargets.add(pos);
+                    for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++) {
+                        List<BlockPos> matches = sections.get(sectionY);
+                        if (matches == null) {
+                            continue;
+                        }
+
+                        // Positions outside the sphere stay in the bucket, a later centre
+                        // can still reach them. Positions that made it in are enqueued once
+                        // and never looked at again, so they are dropped from the bucket.
+                        for (int index = 0; index < matches.size();) {
+                            BlockPos pos = matches.get(index);
+                            if (squaredDistance(center, pos) > maxSquaredDistance) {
+                                index++;
+                                continue;
+                            }
+
+                            matches.set(index, matches.get(matches.size() - 1));
+                            matches.remove(matches.size() - 1);
+                            if (examined.add(pos)) {
+                                sparseTargets.add(pos);
+                            }
                         }
                     }
                 }
