@@ -14,6 +14,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -26,19 +27,31 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.TagKey;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.CocoaBlock;
+import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.DoublePlantBlock;
+import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.GameMasterBlock;
+import net.minecraft.world.level.block.SweetBerryBushBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.EventHooks;
@@ -56,6 +69,13 @@ public final class ChainEvents {
     private static final int SPARSE_SCANS_PER_TICK = 256;
     private static final int BLOCK_BREAKS_PER_TICK = 8;
     private static final int PENDING_SEED_LIMIT = 256;
+    // The interaction mode grows a square outward from the clicked block, one ring per step,
+    // and only keeps positions the held item could actually be used on. Vanilla's useOn stays
+    // the final gate when a position is processed.
+    private static final int INTERACT_BLOCK_LIMIT = 1024;
+    private static final int INTERACT_MAX_RADIUS = 16;
+    private static final int INTERACT_BLOCKS_PER_TICK = 64;
+    static final int INTERACT_PREVIEW_LIMIT = 128;
     private static final double TPS_WARNING_THRESHOLD = 12.0D;
     private static final double TPS_CRITICAL_THRESHOLD = 8.0D;
     private static final double TPS_RECOVERY_THRESHOLD = 16.0D;
@@ -78,6 +98,7 @@ public final class ChainEvents {
     private static final Map<UUID, ChainMode> PLAYER_MODES = new HashMap<>();
     private static final Set<UUID> HELD_KEYS = new HashSet<>();
     private static final Map<UUID, ChainJob> ACTIVE_JOBS = new HashMap<>();
+    private static final Map<UUID, InteractJob> ACTIVE_INTERACT_JOBS = new HashMap<>();
     private static final Set<UUID> PENDING_JOBS = new HashSet<>();
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
@@ -100,6 +121,7 @@ public final class ChainEvents {
             }
         }
         PLAYER_MODES.remove(id);
+        ACTIVE_INTERACT_JOBS.remove(id);
         HELD_KEYS.remove(id);
         PENDING_JOBS.remove(id);
         PENDING_DROP_ORIGINS.remove(id);
@@ -147,7 +169,7 @@ public final class ChainEvents {
         }
 
         ChainMode mode = PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL);
-        if (!isEligible(level, player, target, state, state.getBlock(), mode)) {
+        if (mode.isInteraction() || !isEligible(level, player, target, state, state.getBlock(), mode)) {
             return;
         }
 
@@ -212,9 +234,115 @@ public final class ChainEvents {
                 || doublePlant && (dropPosition.equals(origin.above()) || dropPosition.equals(origin.below()));
     }
 
+    // Right click chaining for the interaction mode. The vanilla interaction still runs for the
+    // block the player aimed at; this only spreads the same action over the square around it.
+    // Nothing is cancelled, so a use vanilla refuses simply does nothing.
+    // HIGHEST because FTB Ultimine harvests mature crops from this same event on HIGH and cancels
+    // it, even with no key held. A lower priority listener would never be called.
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public void onRightClickInteract(PlayerInteractEvent.RightClickBlock event) {
+        if (event.getHand() != InteractionHand.MAIN_HAND
+                || event.getFace() == Direction.DOWN
+                || !(event.getEntity() instanceof ServerPlayer player)
+                || !(event.getLevel() instanceof ServerLevel level)) {
+            return;
+        }
+
+        UUID id = player.getUUID();
+        if (!HELD_KEYS.contains(id)
+                || PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL) != ChainMode.SPECIAL_INTERACT
+                || ACTIVE_INTERACT_JOBS.containsKey(id)
+                || player.isSpectator()) {
+            return;
+        }
+
+        List<BlockPos> targets = new ArrayList<>();
+        if (!collectInteractTargets(level, event.getPos(), player.getMainHandItem(),
+                INTERACT_BLOCK_LIMIT, targets) || targets.isEmpty()) {
+            return;
+        }
+
+        boolean harvest = isHarvestable(level.getBlockState(event.getPos()));
+        ACTIVE_INTERACT_JOBS.put(id, new InteractJob(level, player, targets, harvest));
+    }
+
+    // Shared by the server job and the client preview, so the white outline always matches what
+    // the job will do. Returns false when the held item is not handled by this mode.
+    static boolean collectInteractTargets(Level level, BlockPos origin, ItemStack stack, int limit,
+            List<BlockPos> targets) {
+        if (isHarvestable(level.getBlockState(origin))) {
+            spreadSquare(level, origin, limit, targets,
+                    pos -> isHarvestable(level.getBlockState(pos)));
+            return true;
+        }
+        if (stack.getItem() instanceof HoeItem) {
+            spreadSquare(level, origin, limit, targets, pos -> isTillable(level, pos));
+            return true;
+        }
+        if (stack.getItem() instanceof ItemNameBlockItem) {
+            spreadSquare(level, origin, limit, targets, pos -> isPlantable(level, pos));
+            return true;
+        }
+        return false;
+    }
+
+    // Grows a square outward from the origin, one ring per step. Stops at the limit, at the
+    // radius cap, or as soon as a whole ring holds nothing the held item could be used on.
+    private static void spreadSquare(Level level, BlockPos origin, int limit, List<BlockPos> targets,
+            Predicate<BlockPos> valid) {
+        int y = origin.getY();
+        for (int radius = 0; radius <= INTERACT_MAX_RADIUS && targets.size() < limit; radius++) {
+            boolean found = false;
+            for (int dx = -radius; dx <= radius && targets.size() < limit; dx++) {
+                for (int dz = -radius; dz <= radius && targets.size() < limit; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
+                        continue;
+                    }
+                    BlockPos pos = new BlockPos(origin.getX() + dx, y, origin.getZ() + dz);
+                    if (level.isInWorldBounds(pos) && valid.test(pos)) {
+                        targets.add(pos);
+                        found = true;
+                    }
+                }
+            }
+            if (radius > 0 && !found) {
+                break;
+            }
+        }
+    }
+
+    // Selection is deliberately a little looser than vanilla: useOn is still the final gate when
+    // the job runs, so a position vanilla would refuse is simply skipped.
+    private static boolean isTillable(Level level, BlockPos pos) {
+        return level.getBlockState(pos).is(BlockTags.DIRT) && level.getBlockState(pos.above()).isAir();
+    }
+
+    private static boolean isPlantable(Level level, BlockPos pos) {
+        return level.getBlockState(pos).getBlock() instanceof FarmBlock
+                && level.getBlockState(pos.above()).isAir();
+    }
+
+    // Mirrors what the pack already lets a player harvest with a single right click (FTB
+    // Ultimine), so anything harvestable by hand can also be chained.
+    static boolean isHarvestable(BlockState state) {
+        if (state.getBlock() instanceof CropBlock crop) {
+            return crop.isMaxAge(state);
+        }
+        if (state.getBlock() instanceof SweetBerryBushBlock) {
+            return state.getValue(SweetBerryBushBlock.AGE) > 1;
+        }
+        if (state.getBlock() instanceof CocoaBlock) {
+            return state.getValue(CocoaBlock.AGE) >= CocoaBlock.MAX_AGE;
+        }
+        return false;
+    }
+
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
         for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
+            job.tick();
+        }
+        for (InteractJob job : new ArrayList<>(ACTIVE_INTERACT_JOBS.values())) {
             job.tick();
         }
     }
@@ -506,11 +634,26 @@ public final class ChainEvents {
                 return;
             }
 
+            // Bound storage takes what it can; only what none of the targets accepts is dropped. The
+            // targets are resolved once here, not once per stack.
+            List<StorageRouter.Sink> sinks = List.of();
+            if (Config.STORAGE_BINDING.getAsBoolean()) {
+                StorageBindings bindings = StorageBindings.findIn(player);
+                if (bindings != null) {
+                    sinks = StorageRouter.resolve(level.getServer(), player, bindings);
+                }
+            }
             double x = player.getX();
             double y = player.getY();
             double z = player.getZ();
             for (List<ItemStack> stacks : items.values()) {
                 for (ItemStack stack : stacks) {
+                    if (!sinks.isEmpty()) {
+                        StorageRouter.insert(sinks, stack);
+                        if (stack.isEmpty()) {
+                            continue;
+                        }
+                    }
                     ItemEntity item = new ItemEntity(level, x, y, z, stack);
                     item.setDefaultPickUpDelay();
                     item.setDeltaMovement(0.0D, 0.0D, 0.0D);
@@ -526,6 +669,102 @@ public final class ChainEvents {
         private void clear() {
             items.clear();
             experience = 0;
+        }
+    }
+
+    // Runs the same server-side useOn a manual right click would reach, so tool damage, sounds
+    // and the actual conversion stay with vanilla and other mods. A mature crop is harvested
+    // directly instead, because the pack's right click harvesting lives in FTB Ultimine rather
+    // than in useOn.
+    private static boolean interactOne(ServerLevel level, ServerPlayer player, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (isHarvestable(state)) {
+            return harvestOne(level, player, pos, state);
+        }
+
+        ItemStack stack = player.getMainHandItem();
+        if (stack.isEmpty()) {
+            return false;
+        }
+
+        float exhaustion = player.getFoodData().getExhaustionLevel();
+        UseOnContext context = new UseOnContext(level, player, InteractionHand.MAIN_HAND, stack,
+                new BlockHitResult(Vec3.atCenterOf(pos), Direction.UP, pos, false));
+        boolean used = stack.useOn(context).consumesAction();
+        if (Config.NO_HUNGER_COST.get()) {
+            player.getFoodData().setExhaustion(exhaustion);
+        }
+        return used;
+    }
+
+    // Harvest and replant the way FTB Ultimine does it: the vanilla loot table decides the drops,
+    // one of them pays for the replant, and the block is reset to its first growth stage. Like
+    // FTB Ultimine, the drops are rolled without a tool.
+    private static boolean harvestOne(ServerLevel level, ServerPlayer player, BlockPos pos,
+            BlockState state) {
+        BlockEntity blockEntity = state.hasBlockEntity() ? level.getBlockEntity(pos) : null;
+        for (ItemStack drop : Block.getDrops(state, level, pos, blockEntity, player, ItemStack.EMPTY)) {
+            if (Block.byItem(drop.getItem()) == state.getBlock()) {
+                drop.shrink(1);
+            }
+            if (!drop.isEmpty()) {
+                Block.popResource(level, pos, drop);
+            }
+        }
+        level.setBlockAndUpdate(pos, replanted(state));
+        return true;
+    }
+
+    private static BlockState replanted(BlockState state) {
+        if (state.getBlock() instanceof CropBlock crop) {
+            return crop.getStateForAge(0);
+        }
+        if (state.getBlock() instanceof SweetBerryBushBlock) {
+            return state.setValue(SweetBerryBushBlock.AGE, 1);
+        }
+        return state.setValue(CocoaBlock.AGE, 0);
+    }
+
+    private static final class InteractJob {
+        private final ServerLevel level;
+        private final ServerPlayer player;
+        private final Deque<BlockPos> targets;
+        private final boolean harvest;
+
+        private InteractJob(ServerLevel level, ServerPlayer player, List<BlockPos> targets,
+                boolean harvest) {
+            this.level = level;
+            this.player = player;
+            this.targets = new ArrayDeque<>(targets);
+            this.harvest = harvest;
+        }
+
+        private void tick() {
+            if (!HELD_KEYS.contains(player.getUUID()) || player.isRemoved() || player.isSpectator()
+                    || player.serverLevel() != level) {
+                finish();
+                return;
+            }
+
+            int processed = 0;
+            while (!targets.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK
+                    && HELD_KEYS.contains(player.getUUID())) {
+                processed++;
+                interactOne(level, player, targets.poll());
+                // A consumed seed stack or a broken tool ends the chain. Harvesting never uses up
+                // the held item, and is usually done bare handed, so it must not stop there.
+                if (!harvest && player.getMainHandItem().isEmpty()) {
+                    break;
+                }
+            }
+
+            if (targets.isEmpty()) {
+                finish();
+            }
+        }
+
+        private void finish() {
+            ACTIVE_INTERACT_JOBS.remove(player.getUUID(), this);
         }
     }
 

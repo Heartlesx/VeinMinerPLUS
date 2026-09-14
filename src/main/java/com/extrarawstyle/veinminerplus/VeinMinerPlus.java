@@ -16,9 +16,11 @@ public class VeinMinerPlus {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public VeinMinerPlus(IEventBus modEventBus, ModContainer modContainer) {
+        ModItems.register(modEventBus);
         modEventBus.addListener(NetworkHandler::register);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         NeoForge.EVENT_BUS.register(new ChainEvents());
         NeoForge.EVENT_BUS.register(new CommandEvents());
+        NeoForge.EVENT_BUS.register(new StorageBindingEvents());
     }
 }

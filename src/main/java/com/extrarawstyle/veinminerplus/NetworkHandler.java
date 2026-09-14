@@ -10,7 +10,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 
 public final class NetworkHandler {
-    private static final String PROTOCOL_VERSION = "2";
+    private static final String PROTOCOL_VERSION = "3";
 
     private NetworkHandler() {
     }
@@ -80,6 +80,7 @@ public final class NetworkHandler {
         Config.MAX_BLAST_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxBlastBlocksPerTick(), 1, 512));
         Config.BLAST_SEARCH_DISTANCE.set(Mth.clamp(payload.blastSearchDistance(), 3, 128));
         Config.NO_HUNGER_COST.set(payload.noHungerCost());
+        Config.STORAGE_BINDING.set(payload.storageBinding());
         Config.SPEC.save();
         player.displayClientMessage(net.minecraft.network.chat.Component.translatable(
                 "message.veinminerplus.config_saved"), false);
@@ -126,7 +127,7 @@ public final class NetworkHandler {
 
     public record ConfigSnapshotPayload(int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance,
-            boolean noHungerCost) implements CustomPacketPayload {
+            boolean noHungerCost, boolean storageBinding) implements CustomPacketPayload {
         public static final Type<ConfigSnapshotPayload> TYPE = new Type<>(
                 ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "config_snapshot"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ConfigSnapshotPayload> STREAM_CODEC = StreamCodec.of(
@@ -136,7 +137,7 @@ public final class NetworkHandler {
             return new ConfigSnapshotPayload(Config.MAX_NORMAL_BLOCKS.getAsInt(),
                     Config.MAX_NORMAL_BLOCKS_PER_TICK.getAsInt(), Config.MAX_BLAST_BLOCKS.getAsInt(),
                     Config.MAX_BLAST_BLOCKS_PER_TICK.getAsInt(), Config.BLAST_SEARCH_DISTANCE.getAsInt(),
-                    Config.NO_HUNGER_COST.getAsBoolean());
+                    Config.NO_HUNGER_COST.getAsBoolean(), Config.STORAGE_BINDING.getAsBoolean());
         }
 
         @Override
@@ -147,7 +148,7 @@ public final class NetworkHandler {
 
     public record ConfigUpdatePayload(int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance,
-            boolean noHungerCost) implements CustomPacketPayload {
+            boolean noHungerCost, boolean storageBinding) implements CustomPacketPayload {
         public static final Type<ConfigUpdatePayload> TYPE = new Type<>(
                 ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "config_update"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ConfigUpdatePayload> STREAM_CODEC = StreamCodec.of(
@@ -161,32 +162,35 @@ public final class NetworkHandler {
 
     private static void writeConfigSnapshot(RegistryFriendlyByteBuf buffer, ConfigSnapshotPayload payload) {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
-                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost());
+                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
+                payload.storageBinding());
     }
 
     private static ConfigSnapshotPayload readConfigSnapshot(RegistryFriendlyByteBuf buffer) {
         return new ConfigSnapshotPayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
-                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean());
+                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean());
     }
 
     private static void writeConfigUpdate(RegistryFriendlyByteBuf buffer, ConfigUpdatePayload payload) {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
-                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost());
+                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
+                payload.storageBinding());
     }
 
     private static ConfigUpdatePayload readConfigUpdate(RegistryFriendlyByteBuf buffer) {
         return new ConfigUpdatePayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
-                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean());
+                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean());
     }
 
     private static void writeConfig(RegistryFriendlyByteBuf buffer, int maxNormalBlocks,
             int maxNormalBlocksPerTick, int maxBlastBlocks, int maxBlastBlocksPerTick,
-            int blastSearchDistance, boolean noHungerCost) {
+            int blastSearchDistance, boolean noHungerCost, boolean storageBinding) {
         buffer.writeVarInt(maxNormalBlocks);
         buffer.writeVarInt(maxNormalBlocksPerTick);
         buffer.writeVarInt(maxBlastBlocks);
         buffer.writeVarInt(maxBlastBlocksPerTick);
         buffer.writeVarInt(blastSearchDistance);
         buffer.writeBoolean(noHungerCost);
+        buffer.writeBoolean(storageBinding);
     }
 }

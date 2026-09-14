@@ -16,12 +16,15 @@ public final class VeinMinerConfigScreen extends Screen {
     private EditBox blastSearchDistance;
     private boolean noHungerCost;
     private Button noHungerCostButton;
+    private boolean storageBinding;
+    private Button storageBindingButton;
     private Component error;
 
     VeinMinerConfigScreen(NetworkHandler.ConfigSnapshotPayload initial) {
         super(Component.translatable("veinminerplus.configuration.title"));
         this.initial = initial;
         this.noHungerCost = initial.noHungerCost();
+        this.storageBinding = initial.storageBinding();
     }
 
     @Override
@@ -47,12 +50,17 @@ public final class VeinMinerConfigScreen extends Screen {
             button.setMessage(noHungerText());
         }).bounds(right, top + 198, fieldWidth, 20).build());
 
+        storageBindingButton = addRenderableWidget(Button.builder(storageBindingText(), button -> {
+            storageBinding = !storageBinding;
+            button.setMessage(storageBindingText());
+        }).bounds(left, top + 222, panelWidth() - 30, 20).build());
+
         addRenderableWidget(Button.builder(Component.translatable("veinminerplus.configuration.reset"), button -> reset())
-                .bounds(left, top + 244, 116, 20).build());
+                .bounds(left, top + 252, 116, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.cancel"), button -> onClose())
-                .bounds(left + 122, top + 244, 96, 20).build());
+                .bounds(left + 122, top + 252, 96, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("veinminerplus.configuration.save"), button -> save())
-                .bounds(right + columnWidth() - 96, top + 244, 96, 20).build());
+                .bounds(right + columnWidth() - 96, top + 252, 96, 20).build());
     }
 
     private EditBox addField(String labelKey, int x, int y, int width, int value) {
@@ -68,6 +76,11 @@ public final class VeinMinerConfigScreen extends Screen {
                 ? Component.translatable("options.on") : Component.translatable("options.off"));
     }
 
+    private Component storageBindingText() {
+        return Component.translatable("veinminerplus.configuration.storageBinding.value", storageBinding
+                ? Component.translatable("options.on") : Component.translatable("options.off"));
+    }
+
     private void reset() {
         maxNormalBlocks.setValue("1024");
         maxNormalBlocksPerTick.setValue("8");
@@ -76,6 +89,8 @@ public final class VeinMinerConfigScreen extends Screen {
         blastSearchDistance.setValue("20");
         noHungerCost = false;
         noHungerCostButton.setMessage(noHungerText());
+        storageBinding = true;
+        storageBindingButton.setMessage(storageBindingText());
         error = null;
     }
 
@@ -90,7 +105,7 @@ public final class VeinMinerConfigScreen extends Screen {
         }
 
         NetworkHandler.sendConfigUpdate(new NetworkHandler.ConfigUpdatePayload(maxNormal, normalPerTick, maxBlast,
-                blastPerTick, distance, noHungerCost));
+                blastPerTick, distance, noHungerCost, storageBinding));
         onClose();
     }
 
@@ -115,7 +130,7 @@ public final class VeinMinerConfigScreen extends Screen {
         int top = panelTop();
         int columnLeft = left + 15;
         int columnRight = columnLeft + columnWidth() + 10;
-        graphics.fill(left, top, right, top + 314, 0xB0101010);
+        graphics.fill(left, top, right, top + 324, 0xB0101010);
         graphics.fill(left + 1, top + 1, right - 1, top + 2, 0xFF707070);
         graphics.drawCenteredString(this.font, this.title, this.width / 2, top + 8, 0xFFFFFFFF);
         graphics.drawCenteredString(this.font,
@@ -130,7 +145,7 @@ public final class VeinMinerConfigScreen extends Screen {
         drawSection(graphics, "veinminerplus.configuration.section.player", top + 170);
         drawLabel(graphics, "veinminerplus.configuration.blastSearchDistance", columnLeft, top + 186);
         if (error != null) {
-            graphics.drawCenteredString(this.font, error, this.width / 2, top + 282, 0xFFFF5555);
+            graphics.drawCenteredString(this.font, error, this.width / 2, top + 292, 0xFFFF5555);
         }
         super.render(graphics, mouseX, mouseY, partialTick);
     }
@@ -157,7 +172,7 @@ public final class VeinMinerConfigScreen extends Screen {
     }
 
     private int panelTop() {
-        return Math.max(8, (this.height - 314) / 2);
+        return Math.max(8, (this.height - 324) / 2);
     }
 
     private int columnWidth() {
