@@ -1,14 +1,26 @@
 package com.extrarawstyle.veinminerplus;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.lwjgl.glfw.GLFW;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -20,6 +32,7 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 
@@ -100,6 +113,40 @@ public final class VeinMinerPlusClient {
         } else {
             renderCurrentMode(graphics, minecraft);
         }
+    }
+
+    // Outlines the positions the interaction mode would touch. The list comes from the same
+    // helper the server job uses, so the preview cannot disagree with what actually happens.
+    @SubscribeEvent
+    public static void onRenderLevelStage(RenderLevelStageEvent event) {
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS
+                || clientMode != ChainMode.SPECIAL_INTERACT) {
+            return;
+        }
+
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!isChainKeyActive(minecraft) || !(minecraft.hitResult instanceof BlockHitResult hit)) {
+            return;
+        }
+
+        List<BlockPos> targets = new ArrayList<>();
+        if (!ChainEvents.collectInteractTargets(minecraft.level, hit.getBlockPos(),
+                minecraft.player.getMainHandItem(), ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
+                || targets.isEmpty()) {
+            return;
+        }
+
+        Vec3 camera = event.getCamera().getPosition();
+        PoseStack poseStack = event.getPoseStack();
+        MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
+        VertexConsumer lines = buffers.getBuffer(RenderType.lines());
+        poseStack.pushPose();
+        poseStack.translate(-camera.x, -camera.y, -camera.z);
+        for (BlockPos pos : targets) {
+            LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 1.0F, 1.0F, 1.0F, 1.0F);
+        }
+        poseStack.popPose();
+        buffers.endBatch(RenderType.lines());
     }
 
     @SubscribeEvent

@@ -48,6 +48,11 @@ public final class Config {
             .translation("veinminerplus.configuration.enablePerformanceLog")
             .define("enablePerformanceLog", false);
 
+    public static final ModConfigSpec.BooleanValue STORAGE_BINDING = BUILDER
+            .comment("启用后，连锁挖掘的掉落物优先送入存储绑定卡绑定的存储，塞不下的才掉在地上；默认开启。")
+            .translation("veinminerplus.configuration.storageBinding")
+            .define("storageBinding", true);
+
     static final ModConfigSpec SPEC = BUILDER.build();
 
     private Config() {

@@ -1,0 +1,33 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "SXI",
+    "XPP",
+    "GXD"
+  ],
+  "key": {
+    "S": {
+      "item": "minecraft:stone_pickaxe"
+    },
+    "I": {
+      "item": "minecraft:iron_pickaxe"
+    },
+    "X": {
+      "item": "minecraft:ender_eye"
+    },
+    "P": {
+      "item": "minecraft:ender_pearl"
+    },
+    "G": {
+      "item": "minecraft:golden_pickaxe"
+    },
+    "D": {
+      "item": "minecraft:diamond_pickaxe"
+    }
+  },
+  "result": {
+    "count": 1,
+    "id": "veinminerplus:storage_binder"
+  }
+}
