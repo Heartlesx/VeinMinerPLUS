@@ -1,0 +1,301 @@
+/*
+ * Miuix dark component mapping for LDLib2.
+ * Miuix dp values are reduced to compact logical pixels for Modern UI 250% scale.
+ */
+.vmp-shell {
+  background: sdf(#ff242424, 10);
+  padding-all: 0;
+  gap-all: 0;
+}
+
+/* NavigationRail: surface container with compact text-only items. */
+.vmp-sidebar {
+  background: sdf(#ff111111, 10 0 0 10);
+  padding-left: 8;
+  padding-right: 8;
+  padding-top: 10;
+  padding-bottom: 8;
+  gap-all: 5;
+}
+
+.vmp-brand-block {
+  background: empty;
+}
+
+.vmp-brand {
+  width: 88;
+  height: 16;
+  font-size: 9;
+  text-color: #e6ffffff;
+  text-shadow: false;
+  text-align-horizontal: center;
+  text-align-vertical: center;
+}
+
+.vmp-brand-subtitle {
+  width: 88;
+  height: 22;
+  font-size: 5;
+  text-color: #80ffffff;
+  text-shadow: false;
+  text-align-horizontal: center;
+  text-align-vertical: center;
+}
+
+.vmp-navigation-caption {
+  width: 88;
+  height: 11;
+  font-size: 5;
+  text-color: #ff787e96;
+  text-shadow: false;
+  margin-top: 2;
+  margin-bottom: 1;
+}
+
+.vmp-nav {
+  base-background: empty;
+  hover-background: sdf(#ff242424, 10);
+  pressed-background: sdf(#ff393939, 10);
+  padding-all: 2;
+  text-color: #e6ffffff;
+  text-shadow: false;
+}
+
+.vmp-nav .__button_text__ {
+  font-size: 6;
+  text-color: #e6ffffff;
+  text-shadow: false;
+  text-align-horizontal: center;
+  text-align-vertical: center;
+}
+
+.vmp-nav-selected {
+  base-background: sdf(#ff2d2d2d, 10);
+  hover-background: sdf(#ff393939, 10);
+  pressed-background: sdf(#ff434343, 10);
+  text-color: #ffffffff;
+}
+
+.vmp-nav-selected .__button_text__ {
+  text-color: #ffffffff;
+}
+
+/* Surface + compact TopAppBar. */
+.vmp-content {
+  background: sdf(#ff242424, 0 10 10 0);
+  padding-all: 0;
+}
+
+.vmp-header {
+  padding-left: 12;
+  padding-right: 12;
+  padding-top: 0;
+  border-bottom-width: 1;
+  border-bottom-color: #ff393939;
+}
+
+.vmp-title {
+  width: 100%;
+  height: 18;
+  font-size: 9;
+  text-color: #e6ffffff;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+
+/* ScrollBar: Miuix uses a narrow rounded thumb and no visible track. */
+.vmp-pages {
+  scroller-view-margin: 3;
+}
+
+.vmp-pages .__scroller_view_view-port__ {
+  background: empty;
+  padding-all: 0;
+}
+
+.vmp-pages .__scroller_view_view-container__ {
+  padding-left: 8;
+  padding-right: 7;
+  padding-top: 7;
+  padding-bottom: 8;
+}
+
+.vmp-pages .__scroller_view_vertical-scroller__ {
+  width: 4;
+  margin-left: 0;
+  margin-right: 3;
+}
+
+.vmp-pages .__scroller_scroll_container__ {
+  background: empty;
+  padding-all: 0;
+}
+
+.vmp-pages scroller-vertical .__scroller_scroll_bar__ {
+  base-background: sdf(#80f2f2f2, 2);
+  hover-background: sdf(#ccf2f2f2, 3);
+  pressed-background: sdf(#e6ffffff, 3);
+}
+
+.vmp-page {
+  width: 100%;
+  gap-all: 4;
+}
+
+/* SmallTitle: subdued section labels rather than accent-blue headings. */
+.vmp-section-title {
+  width: 100%;
+  font-size: 6;
+  text-color: #ff787e96;
+  text-shadow: false;
+  padding-left: 4;
+  text-align-vertical: center;
+}
+
+.vmp-grid {
+  gap-column: 6;
+}
+
+/* Card / BasicComponent surfaces. Miuix cards do not use decorative outlines. */
+.vmp-field-card,
+.vmp-setting-card,
+.vmp-info-card,
+.vmp-toggle-card {
+  background: sdf(#ff2d2d2d, 10);
+  padding-all: 6;
+}
+
+.vmp-field-card {
+  gap-row: 3;
+}
+
+.vmp-field-label {
+  width: 100%;
+  height: 13;
+  font-size: 5;
+  text-color: #80ffffff;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+
+/* TextField: secondaryContainer fill and primary focus border. */
+.vmp-field {
+  background: sdf(#ff434343, 8);
+  focus-overlay: sdf(#00000000, 8, 1, #ff277af7);
+  text-color: #e6ffffff;
+  text-shadow: false;
+  font-size: 6;
+  padding-left: 7;
+  padding-right: 7;
+  padding-top: 2;
+  padding-bottom: 2;
+}
+
+.vmp-setting-card {
+  gap-all: 5;
+}
+
+/* Checkbox / BasicComponent rows. */
+.vmp-setting-toggle,
+.vmp-toggle-card {
+  text-color: #e6ffffff;
+  text-shadow: false;
+  font-size: 6;
+}
+
+.vmp-setting-toggle {
+  base-background: empty;
+  pressed-background: empty;
+}
+
+.vmp-setting-toggle .__toggle_button__,
+.vmp-toggle-card .__toggle_button__ {
+  base-background: empty;
+  hover-background: sdf(#305f5f5f, 8);
+  pressed-background: empty;
+  width: 16;
+  height: 16;
+}
+
+.vmp-setting-toggle .__toggle_mark-icon__,
+.vmp-toggle-card .__toggle_mark-icon__ {
+  margin-all: 0;
+  width: 16;
+  height: 16;
+}
+
+.vmp-setting-toggle .__toggle_label__,
+.vmp-toggle-card .__toggle_label__ {
+  font-size: 6;
+  text-color: #e6ffffff;
+  text-shadow: false;
+  margin-left: 6;
+  text-align-vertical: center;
+}
+
+.vmp-description {
+  width: 100%;
+  height: 26;
+  font-size: 5;
+  text-color: #80ffffff;
+  text-shadow: false;
+}
+
+/* TertiaryContainer informational surface. */
+.vmp-info-card {
+  margin-top: 4;
+  background: sdf(#ff2b3b54, 10);
+}
+
+.vmp-info-card .vmp-description {
+  text-color: #ff99c7f1;
+}
+
+/* Footer surface and Miuix secondary/primary buttons. */
+.vmp-footer {
+  padding-left: 8;
+  padding-right: 8;
+  gap-all: 6;
+  border-top-width: 1;
+  border-top-color: #ff393939;
+}
+
+.vmp-error {
+  font-size: 5;
+  text-color: #fff12522;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+
+.vmp-button-group {
+  gap-column: 6;
+}
+
+.vmp-button-secondary,
+.vmp-button-primary {
+  text-shadow: false;
+  font-size: 6;
+  padding-all: 3;
+}
+
+.vmp-button-secondary .__button_text__,
+.vmp-button-primary .__button_text__ {
+  font-size: 6;
+  text-shadow: false;
+  text-align-horizontal: center;
+  text-align-vertical: center;
+}
+
+.vmp-button-secondary {
+  base-background: sdf(#ff434343, 10);
+  hover-background: sdf(#ff505050, 10);
+  pressed-background: sdf(#ff393939, 10);
+  text-color: #ffd9d9d9;
+}
+
+.vmp-button-primary {
+  base-background: sdf(#ff277af7, 10);
+  hover-background: sdf(#ff338fe4, 10);
+  pressed-background: sdf(#ff0073dd, 10);
+  text-color: #ffffffff;
+}
