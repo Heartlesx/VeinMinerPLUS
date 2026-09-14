@@ -28,12 +28,9 @@ sourceSets.main.resources {
 }
 
 repositories {
-    // Add here additional repositories if required by some of the dependencies below.
     mavenCentral()
-    maven {
-        name = 'Curios'
-        url = 'https://maven.theillusivec4.top/'
-    }
+
+    maven { url = 'https://maven.firstdark.dev/snapshots' }
 }
 
 base {
@@ -125,13 +122,10 @@ configurations {
 }
 
 dependencies {
-    // AE2 is an optional dependency: only its API jar is needed to compile the storage routing,
-    // and nothing of it is shipped or required at runtime.
-    compileOnly "org.appliedenergistics:appliedenergistics2:${ae2_version}:api"
-
-    // Curios is optional as well: it is only read to find a card worn in a trinket slot.
-    compileOnly "top.theillusivec4.curios:curios-neoforge:${curios_version}:api"
-
+    compileOnly "com.lowdragmc.ldlib2:ldlib2-neoforge-1.21.1:${ldlib2_version}"
+    localRuntime "com.lowdragmc.ldlib2:ldlib2-neoforge-1.21.1:${ldlib2_version}"
+    compileOnly "org.appliedenergistics:appliedenergistics2:${ae2_version}"
+    localRuntime "org.appliedenergistics:appliedenergistics2:${ae2_version}"
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"

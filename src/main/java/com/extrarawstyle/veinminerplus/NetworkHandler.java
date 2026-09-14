@@ -74,13 +74,16 @@ public final class NetworkHandler {
             return;
         }
 
-        Config.MAX_NORMAL_BLOCKS.set(Mth.clamp(payload.maxNormalBlocks(), 32, 32767));
-        Config.MAX_NORMAL_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxNormalBlocksPerTick(), 1, 384));
-        Config.MAX_BLAST_BLOCKS.set(Mth.clamp(payload.maxBlastBlocks(), 32, 32767));
-        Config.MAX_BLAST_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxBlastBlocksPerTick(), 1, 512));
+        Config.MAX_NORMAL_BLOCKS.set(Mth.clamp(payload.maxNormalBlocks(),
+                Config.MIN_CHAIN_BLOCKS, Config.MAX_CHAIN_BLOCKS));
+        Config.MAX_NORMAL_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxNormalBlocksPerTick(), 1, Config.MAX_BLOCKS_PER_TICK));
+        Config.MAX_BLAST_BLOCKS.set(Mth.clamp(payload.maxBlastBlocks(),
+                Config.MIN_CHAIN_BLOCKS, Config.MAX_CHAIN_BLOCKS));
+        Config.MAX_BLAST_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxBlastBlocksPerTick(), 1, Config.MAX_BLOCKS_PER_TICK));
         Config.BLAST_SEARCH_DISTANCE.set(Mth.clamp(payload.blastSearchDistance(), 3, 128));
         Config.NO_HUNGER_COST.set(payload.noHungerCost());
-        Config.STORAGE_BINDING.set(payload.storageBinding());
+        Config.STORE_DROPS_IN_AE.set(payload.storeDropsInAe());
+        Config.ENABLE_PERFORMANCE_LOG.set(payload.enablePerformanceLog());
         Config.SPEC.save();
         player.displayClientMessage(net.minecraft.network.chat.Component.translatable(
                 "message.veinminerplus.config_saved"), false);
@@ -127,7 +130,7 @@ public final class NetworkHandler {
 
     public record ConfigSnapshotPayload(int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance,
-            boolean noHungerCost, boolean storageBinding) implements CustomPacketPayload {
+            boolean noHungerCost, boolean storeDropsInAe, boolean enablePerformanceLog) implements CustomPacketPayload {
         public static final Type<ConfigSnapshotPayload> TYPE = new Type<>(
                 ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "config_snapshot"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ConfigSnapshotPayload> STREAM_CODEC = StreamCodec.of(
@@ -137,7 +140,8 @@ public final class NetworkHandler {
             return new ConfigSnapshotPayload(Config.MAX_NORMAL_BLOCKS.getAsInt(),
                     Config.MAX_NORMAL_BLOCKS_PER_TICK.getAsInt(), Config.MAX_BLAST_BLOCKS.getAsInt(),
                     Config.MAX_BLAST_BLOCKS_PER_TICK.getAsInt(), Config.BLAST_SEARCH_DISTANCE.getAsInt(),
-                    Config.NO_HUNGER_COST.getAsBoolean(), Config.STORAGE_BINDING.getAsBoolean());
+                    Config.NO_HUNGER_COST.getAsBoolean(), Config.STORE_DROPS_IN_AE.getAsBoolean(),
+                    Config.ENABLE_PERFORMANCE_LOG.getAsBoolean());
         }
 
         @Override
@@ -148,7 +152,7 @@ public final class NetworkHandler {
 
     public record ConfigUpdatePayload(int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance,
-            boolean noHungerCost, boolean storageBinding) implements CustomPacketPayload {
+            boolean noHungerCost, boolean storeDropsInAe, boolean enablePerformanceLog) implements CustomPacketPayload {
         public static final Type<ConfigUpdatePayload> TYPE = new Type<>(
                 ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "config_update"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ConfigUpdatePayload> STREAM_CODEC = StreamCodec.of(
@@ -163,34 +167,35 @@ public final class NetworkHandler {
     private static void writeConfigSnapshot(RegistryFriendlyByteBuf buffer, ConfigSnapshotPayload payload) {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
                 payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
-                payload.storageBinding());
+                payload.storeDropsInAe(), payload.enablePerformanceLog());
     }
 
     private static ConfigSnapshotPayload readConfigSnapshot(RegistryFriendlyByteBuf buffer) {
         return new ConfigSnapshotPayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
-                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean());
+                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean(), buffer.readBoolean());
     }
 
     private static void writeConfigUpdate(RegistryFriendlyByteBuf buffer, ConfigUpdatePayload payload) {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
                 payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
-                payload.storageBinding());
+                payload.storeDropsInAe(), payload.enablePerformanceLog());
     }
 
     private static ConfigUpdatePayload readConfigUpdate(RegistryFriendlyByteBuf buffer) {
         return new ConfigUpdatePayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
-                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean());
+                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean(), buffer.readBoolean());
     }
 
     private static void writeConfig(RegistryFriendlyByteBuf buffer, int maxNormalBlocks,
             int maxNormalBlocksPerTick, int maxBlastBlocks, int maxBlastBlocksPerTick,
-            int blastSearchDistance, boolean noHungerCost, boolean storageBinding) {
+            int blastSearchDistance, boolean noHungerCost, boolean storeDropsInAe, boolean enablePerformanceLog) {
         buffer.writeVarInt(maxNormalBlocks);
         buffer.writeVarInt(maxNormalBlocksPerTick);
         buffer.writeVarInt(maxBlastBlocks);
         buffer.writeVarInt(maxBlastBlocksPerTick);
         buffer.writeVarInt(blastSearchDistance);
         buffer.writeBoolean(noHungerCost);
-        buffer.writeBoolean(storageBinding);
+        buffer.writeBoolean(storeDropsInAe);
+        buffer.writeBoolean(enablePerformanceLog);
     }
 }

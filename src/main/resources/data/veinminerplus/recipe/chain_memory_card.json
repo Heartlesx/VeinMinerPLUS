@@ -1,0 +1,21 @@
+{
+  "neoforge:conditions": [
+    {
+      "type": "neoforge:mod_loaded",
+      "modid": "ae2"
+    }
+  ],
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {
+      "item": "ae2:memory_card"
+    },
+    {
+      "item": "ae2:fluix_crystal"
+    }
+  ],
+  "result": {
+    "id": "veinminerplus:chain_memory_card",
+    "count": 1
+  }
+}
