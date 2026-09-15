@@ -33,7 +33,6 @@ import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.HoeItem;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.UseOnContext;
@@ -585,43 +584,17 @@ public final class ChainEvents {
     }
 
     private static final class DropBuffer {
-        // Bucketing by item limits the scan below to stacks that could actually merge with
-        // the incoming drop.
-        private final Map<Item, List<ItemStack>> items = new HashMap<>();
+        // One bucket per item and component set, so a drop finds its total in a single lookup.
+        // A long chain accumulates thousands of buckets; scanning all of them per drop made every
+        // drop cost grow with the number already accumulated.
+        private final Map<StackKey, Long> counts = new HashMap<>();
         private int experience;
 
         private void add(ItemStack stack) {
             if (stack.isEmpty()) {
                 return;
             }
-
-            // Everything this can merge into holds the same item and components, so they all
-            // share one max stack size.
-            int maxStackSize = stack.getMaxStackSize();
-            int remaining = stack.getCount();
-            List<ItemStack> stacks = items.computeIfAbsent(stack.getItem(), key -> new ArrayList<>());
-            for (ItemStack existing : stacks) {
-                if (!ItemStack.isSameItemSameComponents(existing, stack)) {
-                    continue;
-                }
-                int space = maxStackSize - existing.getCount();
-                if (space <= 0) {
-                    continue;
-                }
-
-                int amount = Math.min(space, remaining);
-                existing.setCount(existing.getCount() + amount);
-                remaining -= amount;
-                if (remaining == 0) {
-                    return;
-                }
-            }
-
-            while (remaining > 0) {
-                int amount = Math.min(maxStackSize, remaining);
-                stacks.add(stack.copyWithCount(amount));
-                remaining -= amount;
-            }
+            counts.merge(new StackKey(stack), (long) stack.getCount(), Long::sum);
         }
 
         private void addExperience(int amount) {
@@ -646,8 +619,16 @@ public final class ChainEvents {
             double x = player.getX();
             double y = player.getY();
             double z = player.getZ();
-            for (List<ItemStack> stacks : items.values()) {
-                for (ItemStack stack : stacks) {
+            for (Map.Entry<StackKey, Long> entry : counts.entrySet()) {
+                // A bucket holds one running total, so it has to be cut back to stack size before
+                // it leaves the buffer.
+                ItemStack template = entry.getKey().template;
+                int maxStackSize = template.getMaxStackSize();
+                long remaining = entry.getValue();
+                while (remaining > 0) {
+                    int amount = (int) Math.min(maxStackSize, remaining);
+                    remaining -= amount;
+                    ItemStack stack = template.copyWithCount(amount);
                     if (!sinks.isEmpty()) {
                         StorageRouter.insert(sinks, stack);
                         if (stack.isEmpty()) {
@@ -667,8 +648,31 @@ public final class ChainEvents {
         }
 
         private void clear() {
-            items.clear();
+            counts.clear();
             experience = 0;
+        }
+
+        // Identity of a bucket: the item plus every data component, the same pair the vanilla
+        // helper compares. Count is deliberately excluded, it is what the bucket accumulates.
+        private static final class StackKey {
+            private final ItemStack template;
+            private final int hash;
+
+            private StackKey(ItemStack stack) {
+                this.template = stack.copyWithCount(1);
+                this.hash = ItemStack.hashItemAndComponents(this.template);
+            }
+
+            @Override
+            public int hashCode() {
+                return hash;
+            }
+
+            @Override
+            public boolean equals(Object other) {
+                return other instanceof StackKey key
+                        && ItemStack.isSameItemSameComponents(template, key.template);
+            }
         }
     }
 
