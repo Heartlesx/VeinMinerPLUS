@@ -40,8 +40,22 @@ minecraft {
     }
 }
 
+repositories {
+    maven {
+        name = 'ModMaven'
+        url = 'https://modmaven.dev/'
+    }
+    maven {
+        name = 'Curios'
+        url = 'https://maven.theillusivec4.top/'
+    }
+}
+
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    // API-only jars, used at compile time and never shipped: the mod still loads without them.
+    compileOnly fg.deobf("appeng:appliedenergistics2-forge:${ae2_version}:api")
+    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:${curios_version}:api")
 }
 
 tasks.named('processResources', ProcessResources).configure {

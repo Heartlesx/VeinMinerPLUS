@@ -15,7 +15,7 @@ import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public final class NetworkHandler {
-    private static final String PROTOCOL_VERSION = "2";
+    private static final String PROTOCOL_VERSION = "3";
     private static int packetId;
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "main"),
@@ -133,6 +133,7 @@ public final class NetworkHandler {
             Config.MAX_BLAST_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxBlastBlocksPerTick(), 1, 512));
             Config.BLAST_SEARCH_DISTANCE.set(Mth.clamp(payload.blastSearchDistance(), 3, 128));
             Config.NO_HUNGER_COST.set(payload.noHungerCost());
+            Config.STORAGE_BINDING.set(payload.storageBinding());
             Config.SPEC.save();
             player.displayClientMessage(Component.translatable("message.veinminerplus.config_saved"), false);
         });
@@ -150,48 +151,51 @@ public final class NetworkHandler {
 
     public record ConfigSnapshotPayload(int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance,
-            boolean noHungerCost) {
+            boolean noHungerCost, boolean storageBinding) {
         static ConfigSnapshotPayload current() {
             return new ConfigSnapshotPayload(Config.MAX_NORMAL_BLOCKS.get(),
                     Config.MAX_NORMAL_BLOCKS_PER_TICK.get(), Config.MAX_BLAST_BLOCKS.get(),
                     Config.MAX_BLAST_BLOCKS_PER_TICK.get(), Config.BLAST_SEARCH_DISTANCE.get(),
-                    Config.NO_HUNGER_COST.get());
+                    Config.NO_HUNGER_COST.get(), Config.STORAGE_BINDING.get());
         }
     }
 
     public record ConfigUpdatePayload(int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance,
-            boolean noHungerCost) {
+            boolean noHungerCost, boolean storageBinding) {
     }
 
     private static void writeConfigSnapshot(ConfigSnapshotPayload payload, FriendlyByteBuf buffer) {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
-                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost());
+                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
+                payload.storageBinding());
     }
 
     private static ConfigSnapshotPayload readConfigSnapshot(FriendlyByteBuf buffer) {
         return new ConfigSnapshotPayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
-                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean());
+                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean());
     }
 
     private static void writeConfigUpdate(ConfigUpdatePayload payload, FriendlyByteBuf buffer) {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
-                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost());
+                payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
+                payload.storageBinding());
     }
 
     private static ConfigUpdatePayload readConfigUpdate(FriendlyByteBuf buffer) {
         return new ConfigUpdatePayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
-                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean());
+                buffer.readVarInt(), buffer.readVarInt(), buffer.readBoolean(), buffer.readBoolean());
     }
 
     private static void writeConfig(FriendlyByteBuf buffer, int maxNormalBlocks,
             int maxNormalBlocksPerTick, int maxBlastBlocks, int maxBlastBlocksPerTick,
-            int blastSearchDistance, boolean noHungerCost) {
+            int blastSearchDistance, boolean noHungerCost, boolean storageBinding) {
         buffer.writeVarInt(maxNormalBlocks);
         buffer.writeVarInt(maxNormalBlocksPerTick);
         buffer.writeVarInt(maxBlastBlocks);
         buffer.writeVarInt(maxBlastBlocksPerTick);
         buffer.writeVarInt(blastSearchDistance);
         buffer.writeBoolean(noHungerCost);
+        buffer.writeBoolean(storageBinding);
     }
 }

@@ -3,7 +3,6 @@ package com.extrarawstyle.veinminerplus;
 import java.util.List;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
@@ -12,11 +11,10 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.level.Level;
-import net.neoforged.fml.ModList;
-import net.neoforged.neoforge.capabilities.Capabilities;
-import net.neoforged.neoforge.items.IItemHandler;
+import net.minecraftforge.common.capabilities.ForgeCapabilities;
+import net.minecraftforge.fml.ModList;
+import net.minecraftforge.items.IItemHandler;
 
 // The storage binding card holds a single binding: the kind of storage it was bound to and the block it
 // points at. Binding another block replaces the old one, and whatever the bound target does not accept
@@ -56,11 +54,11 @@ public record StorageBindings(String type, BlockTarget target) {
     }
 
     static StorageBindings read(ItemStack stack) {
-        CustomData data = stack.get(DataComponents.CUSTOM_DATA);
-        if (data == null) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null) {
             return EMPTY;
         }
-        CompoundTag saved = data.copyTag().getCompound(KEY);
+        CompoundTag saved = tag.getCompound(KEY);
         for (String type : TYPES) {
             BlockTarget target = load(saved, type);
             if (target != null) {
@@ -72,12 +70,15 @@ public record StorageBindings(String type, BlockTarget target) {
 
     static void write(ItemStack stack, StorageBindings bindings) {
         if (bindings.isEmpty()) {
-            CustomData.update(DataComponents.CUSTOM_DATA, stack, tag -> tag.remove(KEY));
+            CompoundTag tag = stack.getTag();
+            if (tag != null) {
+                tag.remove(KEY);
+            }
             return;
         }
         CompoundTag saved = new CompoundTag();
         saved.put(bindings.type(), bindings.target().save());
-        CustomData.update(DataComponents.CUSTOM_DATA, stack, tag -> tag.put(KEY, saved));
+        stack.getOrCreateTag().put(KEY, saved);
     }
 
     // Returns the binding of the first card the player carries. It counts whether the card sits in the
@@ -118,7 +119,7 @@ public record StorageBindings(String type, BlockTarget target) {
                 return bindings;
             }
         }
-        IItemHandler contents = stack.getCapability(Capabilities.ItemHandler.ITEM);
+        IItemHandler contents = stack.getCapability(ForgeCapabilities.ITEM_HANDLER).resolve().orElse(null);
         if (contents == null) {
             return null;
         }

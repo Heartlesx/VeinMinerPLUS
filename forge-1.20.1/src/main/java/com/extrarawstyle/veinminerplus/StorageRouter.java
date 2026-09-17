@@ -6,10 +6,11 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
-import net.neoforged.fml.ModList;
-import net.neoforged.neoforge.capabilities.Capabilities;
-import net.neoforged.neoforge.items.IItemHandler;
-import net.neoforged.neoforge.items.ItemHandlerHelper;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraftforge.common.capabilities.ForgeCapabilities;
+import net.minecraftforge.fml.ModList;
+import net.minecraftforge.items.IItemHandler;
+import net.minecraftforge.items.ItemHandlerHelper;
 
 // Turns the binding of a card into the sink that takes the drops. The target is resolved once per flush
 // and then reused for every stack, so a flush with many stacks does not repeat the lookups.
@@ -42,14 +43,23 @@ final class StorageRouter {
     }
 
     // Some blocks only expose their inventory for a specific side, so a side-less lookup failing is
-    // not the end of it.
+    // not the end of it. The chunk is read in full first, so a bound target keeps working across
+    // dimensions even when nobody is standing next to it.
     private static IItemHandler blockHandler(ServerLevel level, BlockPos pos) {
-        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        BlockEntity blockEntity = level.getBlockEntity(pos);
+        if (blockEntity == null) {
+            level.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
+            blockEntity = level.getBlockEntity(pos);
+        }
+        if (blockEntity == null) {
+            return null;
+        }
+        IItemHandler handler = blockEntity.getCapability(ForgeCapabilities.ITEM_HANDLER).resolve().orElse(null);
         if (handler != null) {
             return handler;
         }
         for (Direction side : Direction.values()) {
-            handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, side);
+            handler = blockEntity.getCapability(ForgeCapabilities.ITEM_HANDLER, side).resolve().orElse(null);
             if (handler != null) {
                 return handler;
             }

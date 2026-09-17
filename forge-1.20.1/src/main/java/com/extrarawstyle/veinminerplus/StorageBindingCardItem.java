@@ -42,14 +42,13 @@ public class StorageBindingCardItem extends Item {
     // well, so this path also runs when a block was clicked. Clearing must not fire in that case.
     private static boolean isAimingAtBlock(Level level, Player player) {
         Vec3 eye = player.getEyePosition();
-        Vec3 end = eye.add(player.getViewVector(1.0F).scale(player.blockInteractionRange()));
+        Vec3 end = eye.add(player.getViewVector(1.0F).scale(player.getBlockReach()));
         return level.clip(new ClipContext(eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player))
                 .getType() != HitResult.Type.MISS;
     }
 
     @Override
-    public void appendHoverText(ItemStack stack, Item.TooltipContext context, List<Component> tooltip,
-            TooltipFlag flag) {
+    public void appendHoverText(ItemStack stack, Level level, List<Component> tooltip, TooltipFlag flag) {
         for (Component line : StorageBindings.read(stack).describe()) {
             tooltip.add(line.copy().withStyle(ChatFormatting.GRAY));
         }

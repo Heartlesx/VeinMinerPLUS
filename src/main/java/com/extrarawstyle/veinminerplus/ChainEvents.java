@@ -32,10 +32,11 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.AxeItem;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
@@ -269,7 +270,8 @@ public final class ChainEvents {
     // the job will do. Returns false when the held item is not handled by this mode.
     static boolean collectInteractTargets(Level level, BlockPos origin, ItemStack stack, int limit,
             List<BlockPos> targets) {
-        if (isHarvestable(level.getBlockState(origin))) {
+        BlockState originState = level.getBlockState(origin);
+        if (isHarvestable(originState)) {
             spreadSquare(level, origin, limit, targets,
                     pos -> isHarvestable(level.getBlockState(pos)));
             return true;
@@ -282,7 +284,29 @@ public final class ChainEvents {
             spreadSquare(level, origin, limit, targets, pos -> isPlantable(level, pos));
             return true;
         }
+        // An axe strips logs, and Create applies its own recipes to the clicked block; both work on
+        // the block the player aimed at, so its neighbours of the same kind are collected. Anything
+        // the held item does not apply to is skipped by the vanilla gate inside interactOne.
+        if (isAppliedToBlock(stack, originState)) {
+            Block originBlock = originState.getBlock();
+            spreadSquare(level, origin, limit, targets, pos -> level.getBlockState(pos).is(originBlock));
+            return true;
+        }
         return false;
+    }
+
+    // An axe is applied to logs. Create runs its item application through the interact event instead
+    // of useOn, so anything from that mod is offered to the block that was clicked. Items that place
+    // blocks are left out on purpose: chaining them would build a wall.
+    private static boolean isAppliedToBlock(ItemStack stack, BlockState state) {
+        if (stack.isEmpty() || stack.getItem() instanceof BlockItem) {
+            return false;
+        }
+        if (stack.getItem() instanceof AxeItem) {
+            return state.is(BlockTags.LOGS);
+        }
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+        return id != null && "create".equals(id.getNamespace());
     }
 
     // Grows a square outward from the origin, one ring per step. Stops at the limit, at the
@@ -569,6 +593,10 @@ public final class ChainEvents {
         player.displayClientMessage(Component.translatable("message.veinminerplus.progress", count), true);
     }
 
+    private static void showInteractProgress(ServerPlayer player, int count) {
+        player.displayClientMessage(Component.translatable("message.veinminerplus.interact_progress", count), true);
+    }
+
     private static double getServerTps(ServerLevel level) {
         MinecraftServer server = level.getServer();
         long tickTimeNanos = server.getAverageTickTimeNanos();
@@ -607,13 +635,13 @@ public final class ChainEvents {
                 return;
             }
 
-            // Bound storage takes what it can; only what none of the targets accepts is dropped. The
-            // targets are resolved once here, not once per stack.
-            List<StorageRouter.Sink> sinks = List.of();
+            // The bound storage takes what it can; only what it does not accept is dropped. The target
+            // is resolved once here, not once per stack.
+            StorageRouter.Sink sink = null;
             if (Config.STORAGE_BINDING.getAsBoolean()) {
                 StorageBindings bindings = StorageBindings.findIn(player);
                 if (bindings != null) {
-                    sinks = StorageRouter.resolve(level.getServer(), player, bindings);
+                    sink = StorageRouter.resolve(level.getServer(), player, bindings);
                 }
             }
             double x = player.getX();
@@ -629,8 +657,8 @@ public final class ChainEvents {
                     int amount = (int) Math.min(maxStackSize, remaining);
                     remaining -= amount;
                     ItemStack stack = template.copyWithCount(amount);
-                    if (!sinks.isEmpty()) {
-                        StorageRouter.insert(sinks, stack);
+                    if (sink != null) {
+                        sink.insert(stack);
                         if (stack.isEmpty()) {
                             continue;
                         }
@@ -676,10 +704,10 @@ public final class ChainEvents {
         }
     }
 
-    // Runs the same server-side useOn a manual right click would reach, so tool damage, sounds
-    // and the actual conversion stay with vanilla and other mods. A mature crop is harvested
-    // directly instead, because the pack's right click harvesting lives in FTB Ultimine rather
-    // than in useOn.
+    // Runs the same server-side right click a manual one would reach, so tool damage, sounds, mod
+    // interactions (Create's item application) and the actual conversion stay with vanilla and other
+    // mods. A mature crop is harvested directly instead, because the pack's right click harvesting
+    // lives in FTB Ultimine rather than in the interact pipeline.
     private static boolean interactOne(ServerLevel level, ServerPlayer player, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         if (isHarvestable(state)) {
@@ -692,13 +720,14 @@ public final class ChainEvents {
         }
 
         float exhaustion = player.getFoodData().getExhaustionLevel();
-        UseOnContext context = new UseOnContext(level, player, InteractionHand.MAIN_HAND, stack,
+        // The full pipeline, so mods that hook the interact event see every chained position too.
+        InteractionResult result = player.gameMode.useItemOn(player, level, stack, InteractionHand.MAIN_HAND,
                 new BlockHitResult(Vec3.atCenterOf(pos), Direction.UP, pos, false));
-        boolean used = stack.useOn(context).consumesAction();
         if (Config.NO_HUNGER_COST.get()) {
             player.getFoodData().setExhaustion(exhaustion);
         }
-        return used;
+        // A cancelled interaction hands back no result at all; that counts as "not applied".
+        return result != null && result.consumesAction();
     }
 
     // Harvest and replant the way FTB Ultimine does it: the vanilla loot table decides the drops,
@@ -734,6 +763,7 @@ public final class ChainEvents {
         private final ServerPlayer player;
         private final Deque<BlockPos> targets;
         private final boolean harvest;
+        private int processedCount;
 
         private InteractJob(ServerLevel level, ServerPlayer player, List<BlockPos> targets,
                 boolean harvest) {
@@ -751,15 +781,23 @@ public final class ChainEvents {
             }
 
             int processed = 0;
+            int counted = 0;
             while (!targets.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK
                     && HELD_KEYS.contains(player.getUUID())) {
                 processed++;
-                interactOne(level, player, targets.poll());
+                if (interactOne(level, player, targets.poll())) {
+                    processedCount++;
+                    counted++;
+                }
                 // A consumed seed stack or a broken tool ends the chain. Harvesting never uses up
                 // the held item, and is usually done bare handed, so it must not stop there.
                 if (!harvest && player.getMainHandItem().isEmpty()) {
                     break;
                 }
+            }
+
+            if (counted > 0) {
+                showInteractProgress(player, processedCount);
             }
 
             if (targets.isEmpty()) {
