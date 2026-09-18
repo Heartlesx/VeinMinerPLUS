@@ -1,0 +1,31 @@
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+.idea
+
+# gradle
+build
+.gradle
+
+# other
+eclipse
+run
+
+# Files from Forge MDK
+forge*changelog.txt
+
+# 1.12.2 side
+run-server
+_tmp
+# 编译期用的第三方 jar（从目标整合包 mods 目录取出），体积大且不应提交
+libs/*.jar

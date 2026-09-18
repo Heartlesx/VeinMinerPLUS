@@ -1,0 +1,89 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net/' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'net.minecraftforge.gradle:ForgeGradle:3.+'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'eclipse'
+
+version = mod_version
+group = mod_group_id
+archivesBaseName = mod_id
+
+sourceCompatibility = targetCompatibility = compileJava.sourceCompatibility = compileJava.targetCompatibility = '1.8'
+
+minecraft {
+    // 1.12.2 用 MCP 命名，社区标准是 stable 39。
+    mappings channel: 'stable', version: '39-1.12'
+
+    // 1.12.2 的 FoodStats 没有暴露疲劳度，AT 是读写它的唯一干净方式。
+    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'debug'
+        }
+
+        server {
+            workingDirectory project.file('run-server')
+            property 'forge.logging.console.level', 'debug'
+        }
+    }
+}
+
+repositories {
+    maven { url = 'https://maven.minecraftforge.net/' }
+    flatDir { dirs 'libs' }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // ForgeGradle 3 + Forge 1.12.2-14.23.5.2854+ 的已知问题：新版 mergetool 会让 FML 在
+    // 注册自己的网络通道时抛 NullPointerException。只在开发环境（runClient/runServer）出现，
+    // 不影响产出的 jar。必须配合删除 caches/forge_gradle/.../forge/<版本>_mapped_* 缓存。
+    implementation("net.minecraftforge:mergetool:0.2.3.3") { force = true }
+
+    // AE2 与 GT 只在编译期使用，运行时不依赖：未安装时相关代码分支不会被加载。
+    // 两者都取自目标整合包 mods 目录，版本与实机一致。
+    compileOnly files('libs/ae2-uel-v0.56.7.jar')
+    compileOnly files('libs/gregtech-1.12.2-2901.jar')
+}
+
+// mcmod.info 里的 ${version} / ${mcversion} 需要在这里展开。
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'mcversion', project.minecraft_version
+    filesMatching('mcmod.info') {
+        expand 'version': project.version, 'mcversion': project.minecraft_version
+    }
+}
+
+jar {
+    // MDK 的示例包已被删除，但它留下的空目录仍会进 jar，产物里不该有它。
+    exclude 'com/example/**'
+
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : mod_authors,
+                // FG3 不会自动声明 AT，缺了它运行时不会应用，字段访问会抛 IllegalAccessError。
+                'FMLAT'                   : 'accesstransformer.cfg'
+        ])
+    }
+}
+jar.finalizedBy('reobfJar')
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
