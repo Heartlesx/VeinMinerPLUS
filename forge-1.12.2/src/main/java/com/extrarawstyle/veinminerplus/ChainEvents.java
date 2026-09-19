@@ -62,6 +62,9 @@ public final class ChainEvents {
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
     private static final int SPARSE_SCANS_PER_TICK = 256;
     private static final int BLOCK_BREAKS_PER_TICK = 8;
+    // One player action can break a whole area through a tool of another mod, and every block of
+    // it arrives as its own break event. The positions are collected up to this many.
+    private static final int PENDING_SEED_LIMIT = 256;
     // The interaction mode grows a square outward from the clicked block, one ring per step,
     // and only keeps positions the held item could actually be used on. The vanilla use stays
     // the final gate when a position is processed.
@@ -96,6 +99,7 @@ public final class ChainEvents {
     // of the tick lets the break finish first.
     private static final Map<UUID, PendingStart> PENDING_STARTS = new HashMap<>();
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
+    private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
@@ -135,6 +139,7 @@ public final class ChainEvents {
         HELD_KEYS.remove(id);
         PENDING_JOBS.remove(id);
         PENDING_STARTS.remove(id);
+        PENDING_SEEDS.remove(id);
         PENDING_DROP_ORIGINS.remove(id);
         PENDING_DOUBLE_PLANTS.remove(id);
         LAST_BREAK_FACES.remove(id);
@@ -184,18 +189,30 @@ public final class ChainEvents {
 
         WorldServer level = (WorldServer) world;
         UUID id = player.getUniqueID();
+        BlockPos target = event.getPos().toImmutable();
+        List<BlockPos> seeds = PENDING_SEEDS.get(id);
+        if (seeds != null) {
+            // One player action, but a tool such as a GregTech area tool breaks a whole area in
+            // that one action and fires this event for every block of it. Starting the chain from
+            // a single block inside that area would trap it: all of its neighbours are already
+            // air, so the search can never reach the untouched blocks around the area. Collect
+            // the whole area instead, so the chain starts from its edge.
+            if (seeds.size() < PENDING_SEED_LIMIT) {
+                seeds.add(target);
+            }
+            return;
+        }
         if (PENDING_JOBS.contains(id)) {
             return;
         }
 
-        BlockPos target = event.getPos().toImmutable();
         IBlockState state = event.getState();
         ChainMode mode = PLAYER_MODES.containsKey(id) ? PLAYER_MODES.get(id) : ChainMode.NORMAL;
-        if (mode.isInteraction() || !isEligible(level, player, target, state, state.getBlock(), mode)) {
+        if (mode.isInteraction() || !isEligible(level, player, target, state, state, mode)) {
             if (traceBreak(player)) {
                 VeinMinerPlus.debug("break {} rejected: mode={} interaction={} reason={} block={}",
                         target, mode, mode.isInteraction(),
-                        eligibilityFailure(level, player, target, state, state.getBlock(), mode),
+                        eligibilityFailure(level, player, target, state, state, mode),
                         state.getBlock().getRegistryName());
             }
             return;
@@ -216,11 +233,14 @@ public final class ChainEvents {
             drops.addExperience(event.getExpToDrop());
             event.setExpToDrop(0);
         }
+        List<BlockPos> pendingSeeds = new ArrayList<>();
+        pendingSeeds.add(target);
         PENDING_DROPS.put(id, drops);
         PENDING_DROP_ORIGINS.put(id, target);
         PENDING_DOUBLE_PLANTS.put(id, state.getBlock() instanceof BlockDoublePlant);
         PENDING_JOBS.add(id);
-        PENDING_STARTS.put(id, new PendingStart(level, player, target, state, face, mode, drops));
+        PENDING_SEEDS.put(id, pendingSeeds);
+        PENDING_STARTS.put(id, new PendingStart(level, player, target, state, face, mode, drops, pendingSeeds));
     }
 
     // Item drops are taken here rather than from the spawned item: the harvest event names the
@@ -273,6 +293,10 @@ public final class ChainEvents {
             boolean doublePlant = PENDING_DOUBLE_PLANTS.containsKey(entry.getKey())
                     && PENDING_DOUBLE_PLANTS.get(entry.getKey());
             if (origin != null && matchesDropPosition(pos, origin, doublePlant)) {
+                return entry.getValue();
+            }
+            List<BlockPos> seeds = PENDING_SEEDS.get(entry.getKey());
+            if (seeds != null && seeds.contains(pos)) {
                 return entry.getValue();
             }
         }
@@ -468,11 +492,14 @@ public final class ChainEvents {
     }
 
     private static void startAfterPrimaryBreak(WorldServer level, EntityPlayerMP player, BlockPos target,
-            IBlockState originalState, EnumFacing face, ChainMode mode, DropBuffer drops) {
+            IBlockState originalState, EnumFacing face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
         UUID id = player.getUniqueID();
         PENDING_JOBS.remove(id);
         if (PENDING_DROPS.get(id) == drops) {
             PENDING_DROPS.remove(id);
+        }
+        if (PENDING_SEEDS.get(id) == seeds) {
+            PENDING_SEEDS.remove(id);
         }
         PENDING_DROP_ORIGINS.remove(id);
         PENDING_DOUBLE_PLANTS.remove(id);
@@ -491,7 +518,7 @@ public final class ChainEvents {
             return;
         }
 
-        ACTIVE_JOBS.put(id, new ChainJob(level, player, target, originalState.getBlock(), face, mode, drops));
+        ACTIVE_JOBS.put(id, new ChainJob(level, player, target, originalState, face, mode, drops, seeds));
         showProgress(player, 1);
         VeinMinerPlus.debug("job started at {} mode={} block={}", target, mode,
                 originalState.getBlock().getRegistryName());
@@ -505,7 +532,7 @@ public final class ChainEvents {
     // Diagnostic twin of isEligible, reporting which condition refused the block. Kept separate so
     // the hot path in isEligible still allocates nothing.
     private static String eligibilityFailure(WorldServer level, EntityPlayerMP player, BlockPos pos,
-            IBlockState state, Block targetBlock, ChainMode mode) {
+            IBlockState state, IBlockState targetState, ChainMode mode) {
         if (state.getBlock().isAir(state, level, pos)) {
             return "air";
         }
@@ -527,7 +554,7 @@ public final class ChainEvents {
                 matches = isLog(state);
                 break;
             default:
-                matches = state.getBlock() == targetBlock;
+                matches = sameKind(targetState, state);
                 break;
         }
         if (!matches) {
@@ -540,7 +567,7 @@ public final class ChainEvents {
     }
 
     private static boolean isEligible(WorldServer level, EntityPlayerMP player, BlockPos pos, IBlockState state,
-            Block targetBlock, ChainMode mode) {
+            IBlockState targetState, ChainMode mode) {
         if (state.getBlock().isAir(state, level, pos) || !level.isBlockModifiable(player, pos)
                 || state.getBlockHardness(level, pos) < 0.0F) {
             return false;
@@ -558,10 +585,19 @@ public final class ChainEvents {
                 matches = isLog(state);
                 break;
             default:
-                matches = state.getBlock() == targetBlock;
+                matches = sameKind(targetState, state);
                 break;
         }
         return matches && (player.isCreative() || ForgeHooks.canHarvestBlock(state.getBlock(), player, level, pos));
+    }
+
+    // 1.12.2 gives a whole block family one block and packs its variants into the metadata, so
+    // comparing the block alone counts birch as the same kind as the oak it was chained from.
+    // damageDropped is the meta the family's item carries: it names the variant and leaves the
+    // axis out, which is the granularity a dedicated block per variant would give.
+    private static boolean sameKind(IBlockState targetState, IBlockState state) {
+        return state.getBlock() == targetState.getBlock()
+                && state.getBlock().damageDropped(state) == targetState.getBlock().damageDropped(targetState);
     }
 
     // A blast search tests the same handful of states over and over, and the ore dictionary
@@ -605,6 +641,14 @@ public final class ChainEvents {
                 break;
             }
         }
+        if (!result) {
+            // Not every mod registers its wood on the ore dictionary. GregTech's rubber wood is
+            // one of them, and a chain that only trusts the dictionary refuses to start on it.
+            ResourceLocation id = state.getBlock().getRegistryName();
+            String path = id == null ? "" : id.getPath();
+            result = path.equals("log") || path.equals("log2")
+                    || path.endsWith("_log") || path.endsWith("_wood");
+        }
         LOG_CACHE.put(state, result);
         return result;
     }
@@ -617,7 +661,20 @@ public final class ChainEvents {
         if (item == null || item == Items.AIR || block == Blocks.AIR) {
             return new String[0];
         }
-        int[] ids = OreDictionary.getOreIDs(new ItemStack(item, 1, block.getMetaFromState(state)));
+        // damageDropped is the meta the block's item carries, which is what the dictionary is
+        // registered with. getMetaFromState can pack extra bits on top of that (BlockLog packs
+        // the axis there), and an entry naming an exact meta would then never match.
+        int meta = block.getMetaFromState(state);
+        int dropMeta = block.damageDropped(state);
+        String[] names = oreNames(new ItemStack(item, 1, meta));
+        if (names.length > 0 || dropMeta == meta) {
+            return names;
+        }
+        return oreNames(new ItemStack(item, 1, dropMeta));
+    }
+
+    private static String[] oreNames(ItemStack stack) {
+        int[] ids = OreDictionary.getOreIDs(stack);
         String[] names = new String[ids.length];
         for (int index = 0; index < ids.length; index++) {
             names[index] = OreDictionary.getOreName(ids[index]);
@@ -926,9 +983,10 @@ public final class ChainEvents {
         private final EnumFacing face;
         private final ChainMode mode;
         private final DropBuffer drops;
+        private final List<BlockPos> seeds;
 
         private PendingStart(WorldServer level, EntityPlayerMP player, BlockPos target, IBlockState state,
-                EnumFacing face, ChainMode mode, DropBuffer drops) {
+                EnumFacing face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
             this.level = level;
             this.player = player;
             this.target = target;
@@ -936,10 +994,11 @@ public final class ChainEvents {
             this.face = face;
             this.mode = mode;
             this.drops = drops;
+            this.seeds = seeds;
         }
 
         private void begin() {
-            startAfterPrimaryBreak(level, player, target, state, face, mode, drops);
+            startAfterPrimaryBreak(level, player, target, state, face, mode, drops, seeds);
         }
     }
 
@@ -999,7 +1058,7 @@ public final class ChainEvents {
         private final WorldServer level;
         private final EntityPlayerMP player;
         private final BlockPos origin;
-        private final Block targetBlock;
+        private final IBlockState targetState;
         private final EnumFacing face;
         private final ChainMode mode;
         private final Set<BlockPos> examined = new HashSet<>();
@@ -1024,12 +1083,12 @@ public final class ChainEvents {
         private int tpsWarningCooldown;
         private int ticks;
 
-        private ChainJob(WorldServer level, EntityPlayerMP player, BlockPos origin, Block targetBlock,
-                EnumFacing face, ChainMode mode, DropBuffer drops) {
+        private ChainJob(WorldServer level, EntityPlayerMP player, BlockPos origin, IBlockState targetState,
+                EnumFacing face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
             this.level = level;
             this.player = player;
             this.origin = origin;
-            this.targetBlock = targetBlock;
+            this.targetState = targetState;
             this.face = face;
             this.mode = mode;
             this.drops = drops;
@@ -1045,7 +1104,6 @@ public final class ChainEvents {
             } else {
                 this.graphOffsets = NORMAL_OFFSETS;
             }
-            IBlockState targetState = targetBlock.getDefaultState();
             this.sparseBlast = mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
                     || mode == ChainMode.BLAST_SAME && (isOre(targetState) || isLog(targetState));
@@ -1065,13 +1123,25 @@ public final class ChainEvents {
                 }
             });
 
-            examined.add(origin);
-            loadedChunks.put(chunkKey(origin), level.getChunk(origin.getX() >> 4, origin.getZ() >> 4));
-            if (!mode.isArea()) {
-                if (sparseBlast) {
-                    sparseCenters.addLast(origin);
-                } else {
-                    frontier.addLast(new SearchNode(origin, 0));
+            // Every block the player's action broke is a start, so an area that was cleared in one
+            // go is entered from its edge instead of from a single block whose neighbours are all
+            // gone already.
+            List<BlockPos> starts = new ArrayList<>();
+            starts.add(origin);
+            if (seeds != null) {
+                starts.addAll(seeds);
+            }
+            for (BlockPos start : starts) {
+                if (!examined.add(start)) {
+                    continue;
+                }
+                loadedChunks.put(chunkKey(start), level.getChunk(start.getX() >> 4, start.getZ() >> 4));
+                if (!mode.isArea()) {
+                    if (sparseBlast) {
+                        sparseCenters.addLast(start);
+                    } else {
+                        frontier.addLast(new SearchNode(start, 0));
+                    }
                 }
             }
         }
@@ -1136,7 +1206,7 @@ public final class ChainEvents {
                     }
 
                     IBlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                    if (isEligible(level, player, candidate, state, targetBlock, mode)
+                    if (isEligible(level, player, candidate, state, targetState, mode)
                             && breakOne(level, player, candidate, state)) {
                         brokenCount++;
                         breaks++;
@@ -1181,7 +1251,7 @@ public final class ChainEvents {
                 }
 
                 IBlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                if (isEligible(level, player, candidate, state, targetBlock, mode)
+                if (isEligible(level, player, candidate, state, targetState, mode)
                         && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
@@ -1217,7 +1287,7 @@ public final class ChainEvents {
 
                 BlockPos candidate = sparseTargets.poll();
                 IBlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                if (isEligible(level, player, candidate, state, targetBlock, mode)
+                if (isEligible(level, player, candidate, state, targetState, mode)
                         && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
@@ -1367,7 +1437,7 @@ public final class ChainEvents {
                 case BLAST_LOGS:
                     return isLog(state);
                 default:
-                    return state.getBlock() == targetBlock;
+                    return sameKind(targetState, state);
             }
         }
 
