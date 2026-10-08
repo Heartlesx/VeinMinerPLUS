@@ -21,7 +21,7 @@ public class StorageBindingCardItem extends Item {
         super(properties);
     }
 
-    // Sneaking in the air clears every binding. Binding a target is handled by StorageBindingEvents,
+    // Sneaking in the air clears the binding. Binding a target is handled by StorageBindingEvents,
     // because blocks like the ME controller would otherwise swallow the click to open their own screen.
     @Override
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {

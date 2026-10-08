@@ -6,6 +6,7 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RenderGuiEvent;
+import net.minecraftforge.client.event.RenderLevelStageEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -57,6 +58,11 @@ public final class VeinMinerPlusClientEvents {
     @SubscribeEvent
     public static void onRenderGui(RenderGuiEvent.Post event) {
         VeinMinerPlusClient.renderModeMenu(event.getGuiGraphics());
+    }
+
+    @SubscribeEvent
+    public static void onRenderLevelStage(RenderLevelStageEvent event) {
+        VeinMinerPlusClient.renderInteractPreview(event);
     }
 
     @SubscribeEvent
