@@ -8,7 +8,11 @@
   "chain.veinminerplus.blast_ores": "爆破连锁：所有矿石",
   "chain.veinminerplus.blast_any": "爆破连锁：所有可挖方块",
   "chain.veinminerplus.blast_logs": "爆破伐木：原木",
+  "chain.veinminerplus.fast_mine": "快速挖掘：区块破坏",
   "message.veinminerplus.broken": "连锁挖掘：%s 个方块",
+  "message.veinminerplus.fast_mine.invalid_selection": "选择的区块范围无效或过大。",
+  "message.veinminerplus.fast_mine.tool_required": "快速挖掘需要手持工具。",
+  "message.veinminerplus.fast_mine.forced_chunks_skipped": "快速挖掘已跳过 %s 个强加载区块（受保护区块不会被破坏）。",
   "veinminerplus.configuration.title": "VeinMinerPlus 服务端配置",
   "veinminerplus.configuration.section.veinminerplus.common.toml": "连锁挖掘设置",
   "veinminerplus.configuration.section.veinminerplus.common.toml.title": "连锁挖掘设置",
@@ -64,8 +68,55 @@
   "veinminerplus.configuration.ae_section": "AE 网络存储",
   "veinminerplus.configuration.ae_hint": "AE 存储仅影响连锁挖掘产生的掉落物，不会改变手动挖掘行为。",
   "veinminerplus.configuration.header_hint": "以 Miuix 风格整理服务端规则，保存后立即生效",
-  "veinminerplus.configuration.version": "VMP 3.2 · LDLib2 UI",
+  "veinminerplus.configuration.version": "VMP 1.1 · 快速挖掘地图",
   "veinminerplus.configuration.storeDropsInAe": "将掉落物存入 AE 网络",
   "veinminerplus.configuration.enablePerformanceLog": "开启 VMP 性能检测日志",
-  "veinminerplus.configuration.navigation": "功能导航"
+  "veinminerplus.configuration.navigation": "功能导航",
+  "screen.veinminerplus.fast_mine": "快速挖掘：区块选择",
+  "screen.veinminerplus.single": "单个",
+  "screen.veinminerplus.rectangle": "矩形",
+  "screen.veinminerplus.free": "自由",
+  "screen.veinminerplus.clear": "清空",
+  "screen.veinminerplus.cancel": "取消任务",
+  "screen.veinminerplus.confirm": "开始挖掘",
+  "screen.veinminerplus.selection": "已选取 %s×%s，共 %s 个区块",
+  "screen.veinminerplus.progress": "已加载 %s/%s   已挖 %s   矿石 %s",
+  "screen.veinminerplus.state": "状态：%s"
+  ,"screen.veinminerplus.overview.title": "快速挖掘模式"
+  ,"screen.veinminerplus.overview.subtitle": "选择区块工作范围"
+  ,"screen.veinminerplus.dimension": "维度：%s"
+  ,"screen.veinminerplus.map.title": "区块地图"
+  ,"screen.veinminerplus.map.legend": "已加载    未加载    玩家    选区"
+  ,"screen.veinminerplus.map.zoom": "视野：%s × %s 区块"
+  ,"screen.veinminerplus.player_position": "玩家区块：%s, %s"
+  ,"screen.veinminerplus.task.title": "挖掘任务"
+  ,"screen.veinminerplus.task.progress": "完成度：%s%%"
+  ,"screen.veinminerplus.stats.title": "工作统计"
+  ,"screen.veinminerplus.stats.chunks": "区块：已加载 %s / 共 %s"
+  ,"screen.veinminerplus.stats.blocks": "方块：破坏 %s，处理 %s/%s"
+  ,"screen.veinminerplus.stats.scanned": "扫描：%s/%s"
+  ,"screen.veinminerplus.stats.ores": "发现矿石：%s"
+  ,"screen.veinminerplus.current.title": "当前选区起点"
+  ,"screen.veinminerplus.current.chunk": "区块坐标：%s, %s"
+  ,"screen.veinminerplus.ores.title": "矿物产出"
+  ,"screen.veinminerplus.ores.total": "矿石方块：%s"
+  ,"screen.veinminerplus.ores.pending": "暂无矿物产出"
+  ,"screen.veinminerplus.ores.complete": "任务结束 · 当前仅提供矿石总数"
+  ,"screen.veinminerplus.state.idle": "空闲"
+  ,"screen.veinminerplus.state.loading": "加载区块"
+  ,"screen.veinminerplus.state.scanning": "扫描方块"
+  ,"screen.veinminerplus.state.mining": "挖掘中"
+  ,"screen.veinminerplus.state.paused": "已暂停"
+  ,"screen.veinminerplus.state.completed": "已完成"
+  ,"screen.veinminerplus.state.cancelled": "已取消"
+  ,"screen.veinminerplus.state.failed": "失败"
+  ,"message.veinminerplus.fast_mine.completed": "快速挖掘完成：挖掘 %s 个方块，发现 %s 个矿石方块，耗时 %s 秒。去向：%s，存入 %s，掉落 %s，待重试 %s。"
+  ,"message.veinminerplus.fast_mine.cancelled": "快速挖掘已取消：挖掘 %s 个方块，发现 %s 个矿石方块，耗时 %s 秒。去向：%s，存入 %s，掉落 %s，待重试 %s。"
+  ,"message.veinminerplus.fast_mine.failed": "快速挖掘失败：挖掘 %s 个方块，发现 %s 个矿石方块，耗时 %s 秒。去向：%s，存入 %s，掉落 %s，待重试 %s。"
+  ,"message.veinminerplus.fast_mine.destination.ae": "AE 网络"
+  ,"message.veinminerplus.fast_mine.destination.ae_and_container": "AE 网络和玩家容器"
+  ,"message.veinminerplus.fast_mine.destination.container": "背包/物品栏"
+  ,"message.veinminerplus.fast_mine.destination.pending": "等待重试"
+  ,"message.veinminerplus.fast_mine.destination.ground": "地面掉落物"
+  ,"message.veinminerplus.fast_mine.destination.none": "无物品"
 }

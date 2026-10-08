@@ -8,7 +8,7 @@ public enum ChainMode {
     BLAST_ORES("chain.veinminerplus.blast_ores"),
     BLAST_ANY("chain.veinminerplus.blast_any"),
     BLAST_LOGS("chain.veinminerplus.blast_logs"),
-    SPECIAL_INTERACT("chain.veinminerplus.special_interact");
+    FAST_MINE("chain.veinminerplus.fast_mine");
 
     private final String translationKey;
 
@@ -38,9 +38,8 @@ public enum ChainMode {
         return this == BLAST_SAME || this == BLAST_ORES || this == BLAST_ANY || this == BLAST_LOGS;
     }
 
-    // This mode never chains block breaking; it only reacts to right clicks on a mature crop,
-    // or holding a hoe or a placeable item.
-    public boolean isInteraction() {
-        return this == SPECIAL_INTERACT;
+    public boolean isFastMine() {
+        return this == FAST_MINE;
     }
+
 }

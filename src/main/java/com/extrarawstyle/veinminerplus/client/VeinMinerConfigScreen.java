@@ -1,4 +1,4 @@
-package com.extrarawstyle.veinminerplus;
+package com.extrarawstyle.veinminerplus.client;
 
 import com.extrarawstyle.veinminerplus.NetworkHandler;
 import com.lowdragmc.lowdraglib2.gui.holder.ModularUIScreen;
@@ -25,6 +25,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 
+
 public final class VeinMinerConfigScreen
 extends ModularUIScreen {
     // Modern UI at 250% magnifies every logical pixel. Keep the logical viewport compact
@@ -36,7 +37,7 @@ extends ModularUIScreen {
     private static final int SCREEN_INSET = 10;
 
     VeinMinerConfigScreen(NetworkHandler.ConfigSnapshotPayload initial) {
-        super(VeinMinerConfigScreen.createUi(initial), (Component)Component.translatable((String)"veinminerplus.configuration.title"));
+        super(VeinMinerConfigScreen.createUi(initial), Component.translatable("veinminerplus.configuration.title"));
     }
 
     private static ModularUI createUi(NetworkHandler.ConfigSnapshotPayload config) {
@@ -152,7 +153,7 @@ extends ModularUIScreen {
             label.setId(id);
         }
         if (keyOrText.startsWith("veinminerplus.")) {
-            label.setText((Component)Component.translatable((String)keyOrText));
+            label.setText(Component.translatable(keyOrText));
         } else {
             label.setText(keyOrText);
         }
@@ -196,7 +197,7 @@ extends ModularUIScreen {
                 .addClass("vmp-grid");
         UIElement distance = VeinMinerConfigScreen.fieldCard("veinminerplus.configuration.blastSearchDistance", "blast_distance", config.blastSearchDistance(), 3, 128);
         bottom.addChild(distance);
-        Toggle hunger = VeinMinerConfigScreen.toggle((Component)Component.translatable((String)"veinminerplus.configuration.noHungerCost"), "no_hunger", config.noHungerCost(), "vmp-toggle-card");
+        Toggle hunger = VeinMinerConfigScreen.toggle(Component.translatable("veinminerplus.configuration.noHungerCost"), "no_hunger", config.noHungerCost(), "vmp-toggle-card");
         hunger.layout(layout -> layout.flex(1.0f).height(50.0f).minHeight(50.0f).maxHeight(50.0f));
         bottom.addChild((UIElement)hunger);
         page.addChild(bottom);
@@ -207,7 +208,7 @@ extends ModularUIScreen {
         UIElement page = VeinMinerConfigScreen.page("ae");
         page.addChild(VeinMinerConfigScreen.sectionTitle("veinminerplus.configuration.ae_section"));
         UIElement card = new UIElement().layout(layout -> layout.widthPercent(100.0f).height(78.0f).flexDirection(FlexDirection.COLUMN)).addClass("vmp-setting-card");
-        Toggle store = VeinMinerConfigScreen.toggle((Component)Component.translatable((String)"veinminerplus.configuration.storeDropsInAe"), "store_ae", config.storeDropsInAe(), "vmp-setting-toggle");
+        Toggle store = VeinMinerConfigScreen.toggle(Component.translatable("veinminerplus.configuration.storeDropsInAe"), "store_ae", config.storeDropsInAe(), "vmp-setting-toggle");
         store.layout(layout -> layout.widthPercent(100.0f).height(24.0f));
         card.addChild((UIElement)store);
         card.addChild((UIElement)VeinMinerConfigScreen.label(null, "veinminerplus.configuration.storeDropsInAe.description", "vmp-description"));
@@ -220,7 +221,7 @@ extends ModularUIScreen {
         UIElement page = VeinMinerConfigScreen.page("performance");
         page.addChild(VeinMinerConfigScreen.sectionTitle("veinminerplus.configuration.performance_section"));
         UIElement card = new UIElement().layout(layout -> layout.widthPercent(100.0f).height(78.0f).flexDirection(FlexDirection.COLUMN)).addClass("vmp-setting-card");
-        Toggle performance = VeinMinerConfigScreen.toggle((Component)Component.translatable((String)"veinminerplus.configuration.enablePerformanceLog"), "performance_log", config.enablePerformanceLog(), "vmp-setting-toggle");
+        Toggle performance = VeinMinerConfigScreen.toggle(Component.translatable("veinminerplus.configuration.enablePerformanceLog"), "performance_log", config.enablePerformanceLog(), "vmp-setting-toggle");
         performance.layout(layout -> layout.widthPercent(100.0f).height(24.0f));
         card.addChild((UIElement)performance);
         card.addChild((UIElement)VeinMinerConfigScreen.label(null, "veinminerplus.configuration.enablePerformanceLog.description", "vmp-description"));
@@ -285,9 +286,9 @@ extends ModularUIScreen {
     }
 
     private static void showPage(UIElement root, ScrollerView pages, String page) {
-        UIElement chain = (UIElement)root.selectId("chain_page").findFirst().orElseThrow();
-        UIElement ae = (UIElement)root.selectId("ae_page").findFirst().orElseThrow();
-        UIElement performance = (UIElement)root.selectId("performance_page").findFirst().orElseThrow();
+        UIElement chain = root.selectId("chain_page").findFirst().orElseThrow();
+        UIElement ae = root.selectId("ae_page").findFirst().orElseThrow();
+        UIElement performance = root.selectId("performance_page").findFirst().orElseThrow();
         chain.setDisplay("chain".equals(page));
         ae.setDisplay("ae".equals(page));
         performance.setDisplay("performance".equals(page));
@@ -298,7 +299,7 @@ extends ModularUIScreen {
     }
 
     private static void selectNav(UIElement root, String id, boolean selected) {
-        UIElement element = (UIElement)root.selectId(id).findFirst().orElseThrow();
+        UIElement element = root.selectId(id).findFirst().orElseThrow();
         if (selected) {
             element.addClass("vmp-nav-selected");
         } else {
@@ -350,12 +351,12 @@ extends ModularUIScreen {
         try {
             int value = Integer.parseInt(((TextField)root.selectId(id).findFirst().orElseThrow()).getValue());
             if (value < min || value > max) {
-                throw new ConfigValueException((Component)Component.translatable((String)"veinminerplus.configuration.range", (Object[])new Object[]{min, max}));
+                throw new ConfigValueException(Component.translatable("veinminerplus.configuration.range", min, max));
             }
             return value;
         }
         catch (NumberFormatException exception) {
-            throw new ConfigValueException((Component)Component.translatable((String)"veinminerplus.configuration.invalid"));
+            throw new ConfigValueException(Component.translatable("veinminerplus.configuration.invalid"));
         }
     }
 
@@ -366,7 +367,8 @@ extends ModularUIScreen {
 
     private static final class ConfigValueException
     extends Exception {
-        private final Component message;
+        private static final long serialVersionUID = 1L;
+        private final transient Component message;
 
         private ConfigValueException(Component message) {
             this.message = message;

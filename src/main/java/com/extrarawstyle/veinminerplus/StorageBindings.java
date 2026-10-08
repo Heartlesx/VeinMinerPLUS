@@ -17,6 +17,8 @@ import net.minecraft.world.level.Level;
 import net.neoforged.fml.ModList;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandler;
+import com.extrarawstyle.veinminerplus.ModItems;
+import com.extrarawstyle.veinminerplus.CuriosLookup;
 
 // The three slots of the storage binding card. They are fixed per mod: an AE2 network, Sophisticated
 // Storage (a barrel/chest or a backpack placed on the ground) and Functional Storage. Chains are

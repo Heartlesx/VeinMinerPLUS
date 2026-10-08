@@ -1,26 +1,14 @@
-package com.extrarawstyle.veinminerplus;
-
-import java.util.ArrayList;
-import java.util.List;
+package com.extrarawstyle.veinminerplus.client;
 
 import org.lwjgl.glfw.GLFW;
 
 import com.mojang.blaze3d.platform.InputConstants;
-import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.renderer.LevelRenderer;
-import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.RenderType;
-import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -32,9 +20,13 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
-import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
+
+import com.extrarawstyle.veinminerplus.ChainMode;
+import com.extrarawstyle.veinminerplus.NetworkHandler;
+import com.extrarawstyle.veinminerplus.FastMineProgress;
+import com.extrarawstyle.veinminerplus.VeinMinerPlus;
 
 @Mod(value = VeinMinerPlus.MODID, dist = Dist.CLIENT)
 @EventBusSubscriber(modid = VeinMinerPlus.MODID, value = Dist.CLIENT)
@@ -47,6 +39,8 @@ public final class VeinMinerPlusClient {
 
     private static ChainMode clientMode = ChainMode.NORMAL;
     private static boolean keyStateSent;
+    private static FastMineProgress fastMineProgress = new FastMineProgress(0, 0, 0, 0, 0, 0, 0, 0,
+            FastMineProgress.State.IDLE);
 
     public VeinMinerPlusClient(IEventBus modEventBus, ModContainer container) {
         modEventBus.addListener(VeinMinerPlusClient::registerKeyMappings);
@@ -60,6 +54,8 @@ public final class VeinMinerPlusClient {
     @SubscribeEvent
     public static void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
         clientMode = ChainMode.NORMAL;
+        fastMineProgress = new FastMineProgress(0, 0, 0, 0, 0, 0, 0, 0, FastMineProgress.State.IDLE);
+        FastMineScreen.clearRememberedSelection();
         NetworkHandler.sendModeChange(clientMode);
     }
 
@@ -67,10 +63,40 @@ public final class VeinMinerPlusClient {
     public static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         clientMode = ChainMode.NORMAL;
         keyStateSent = false;
+        fastMineProgress = new FastMineProgress(0, 0, 0, 0, 0, 0, 0, 0, FastMineProgress.State.IDLE);
+        FastMineScreen.clearRememberedSelection();
     }
 
-    static void openConfigScreen(NetworkHandler.ConfigSnapshotPayload config) {
+    public static void openConfigScreen(NetworkHandler.ConfigSnapshotPayload config) {
         Minecraft.getInstance().setScreen(new VeinMinerConfigScreen(config));
+    }
+
+    public static void updateFastMineProgress(FastMineProgress progress) {
+        fastMineProgress = progress;
+        if (Minecraft.getInstance().screen instanceof FastMineScreen screen) {
+            screen.setProgress(progress);
+        }
+    }
+
+    /**
+     * Applies an immediate client-side terminal state while the server cancel
+     * packet is in flight. The server remains authoritative and will overwrite
+     * this snapshot with its final counters.
+     */
+    static void applyLocalFastMineProgress(FastMineProgress progress) {
+        fastMineProgress = progress;
+    }
+
+    public static FastMineProgress fastMineProgress() {
+        return fastMineProgress;
+    }
+
+    public static void openFastMineScreen() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player != null && minecraft.level != null
+                && !(minecraft.screen instanceof FastMineScreen)) {
+            minecraft.setScreen(new FastMineScreen(fastMineProgress));
+        }
     }
 
     @SubscribeEvent
@@ -85,6 +111,10 @@ public final class VeinMinerPlusClient {
         }
         if (event.getAction() == GLFW.GLFW_PRESS) {
             syncKeyState();
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.screen == null && !Screen.hasShiftDown() && clientMode.isFastMine()) {
+                openFastMineScreen();
+            }
         }
     }
 
@@ -97,6 +127,9 @@ public final class VeinMinerPlusClient {
         int direction = event.getScrollDeltaY() > 0.0D ? -1 : 1;
         clientMode = ChainMode.cycle(clientMode, direction);
         NetworkHandler.sendModeChange(clientMode);
+        if (clientMode.isFastMine()) {
+            openFastMineScreen();
+        }
         event.setCanceled(true);
     }
 
@@ -113,40 +146,6 @@ public final class VeinMinerPlusClient {
         } else {
             renderCurrentMode(graphics, minecraft);
         }
-    }
-
-    // Outlines the positions the interaction mode would touch. The list comes from the same
-    // helper the server job uses, so the preview cannot disagree with what actually happens.
-    @SubscribeEvent
-    public static void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS
-                || clientMode != ChainMode.SPECIAL_INTERACT) {
-            return;
-        }
-
-        Minecraft minecraft = Minecraft.getInstance();
-        if (!isChainKeyActive(minecraft) || !(minecraft.hitResult instanceof BlockHitResult hit)) {
-            return;
-        }
-
-        List<BlockPos> targets = new ArrayList<>();
-        if (!ChainEvents.collectInteractTargets(minecraft.level, hit.getBlockPos(),
-                minecraft.player.getMainHandItem(), ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
-                || targets.isEmpty()) {
-            return;
-        }
-
-        Vec3 camera = event.getCamera().getPosition();
-        PoseStack poseStack = event.getPoseStack();
-        MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
-        VertexConsumer lines = buffers.getBuffer(RenderType.lines());
-        poseStack.pushPose();
-        poseStack.translate(-camera.x, -camera.y, -camera.z);
-        for (BlockPos pos : targets) {
-            LevelRenderer.renderLineBox(poseStack, lines, new AABB(pos), 1.0F, 1.0F, 1.0F, 1.0F);
-        }
-        poseStack.popPose();
-        buffers.endBatch(RenderType.lines());
     }
 
     @SubscribeEvent

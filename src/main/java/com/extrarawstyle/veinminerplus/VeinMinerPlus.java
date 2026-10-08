@@ -13,6 +13,7 @@ import net.neoforged.fml.config.ModConfig;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 
+
 @Mod(VeinMinerPlus.MODID)
 public class VeinMinerPlus {
     public static final String MODID = "veinminerplus";
