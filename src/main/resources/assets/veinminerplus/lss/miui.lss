@@ -278,6 +278,239 @@
   padding-all: 3;
 }
 
+/* Fast mining overview: white Miuix surfaces and compact, readable controls. */
+.fm-shell {
+  background: sdf(#ffe9edf2, 12);
+  padding-all: 10;
+  gap-row: 7;
+  font: minecraft:default;
+}
+.fm-shell label, .fm-shell .__button_text__ {
+  font: minecraft:default;
+  /* Bold style is supplied by the label component. A second pixel shadow
+     makes CJK glyphs look doubled and causes the rendering artifacts seen
+     on high scale factors. */
+  text-shadow: false;
+}
+.fm-content { padding-all: 0; gap-column: 8; }
+.fm-card {
+  background: sdf(#ffffffff, 10);
+  padding-all: 8;
+}
+.fm-map-card { background: sdf(#ffffffff, 10); padding-bottom: 8; }
+.fm-card-header { padding-left: 3; padding-right: 3; gap-row: 1; }
+.fm-title {
+  font-size: 11;
+  text-color: #ff172235;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-subtitle {
+  font-size: 6;
+  text-color: #ff53647a;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-map-info {
+  padding-left: 4;
+  padding-right: 4;
+  gap-column: 4;
+}
+.fm-map-position, .fm-map-zoom {
+  font-size: 7;
+  text-color: #ff304562;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-map-zoom { text-align-horizontal: right; }
+.fm-map-controls {
+  padding-left: 3;
+  padding-right: 3;
+  gap-column: 4;
+}
+.fm-tool-button {
+  base-background: sdf(#ffe8eef5, 6);
+  hover-background: sdf(#ffdce9f8, 6);
+  pressed-background: sdf(#ffc9dcf0, 6);
+  text-color: #ff26384f;
+  font-size: 6;
+  padding-all: 1;
+}
+.fm-tool-button .__button_text__ {
+  font-size: 6;
+  text-color: #ff26384f;
+  text-shadow: false;
+  text-align-horizontal: center;
+  text-align-vertical: center;
+}
+.fm-tool-selected {
+  base-background: sdf(#ff4b91e8, 6);
+  hover-background: sdf(#ff65a4f0, 6);
+  pressed-background: sdf(#ff267bd7, 6);
+  text-color: #ffffffff;
+}
+.fm-tool-selected .__button_text__ { text-color: #ffffffff; }
+.fm-map {
+  background: empty;
+  padding-all: 0;
+}
+.fm-sidebar-scroll {
+  background: empty;
+  scroller-view-margin: 2;
+}
+.fm-sidebar-scroll .__scroller_view_view-port__ {
+  background: empty;
+  padding-all: 0;
+}
+.fm-sidebar-scroll .__scroller_view_view-container__ {
+  padding-right: 3;
+  padding-bottom: 1;
+  gap-row: 6;
+}
+.fm-sidebar-scroll .__scroller_view_vertical-scroller__ {
+  width: 4;
+  margin-left: 0;
+  margin-right: 1;
+}
+.fm-sidebar-scroll scroller-vertical .__scroller_scroll_container__ {
+  background: empty;
+}
+.fm-sidebar-scroll scroller-vertical .__scroller_scroll_bar__ {
+  base-background: sdf(#8098a7ad, 2);
+  hover-background: sdf(#cc72858f, 3);
+  pressed-background: sdf(#e6536875, 3);
+}
+.fm-ore-list .__scroller_view_vertical-scroller__ {
+  width: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+.fm-ore-list scroller-vertical .__scroller_scroll_bar__ {
+  width: 0;
+  base-background: empty;
+  hover-background: empty;
+  pressed-background: empty;
+}
+.fm-info-card {
+  background: sdf(#ffffffff, 10);
+  padding-all: 7;
+  margin-bottom: 8;
+}
+.fm-task-card { gap-row: 3; }
+.fm-stats-card { gap-row: 3; margin-top: 6; }
+.fm-card-title {
+  width: 100%;
+  font-size: 8;
+  text-color: #ff172235;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-ore-header-title {
+  width: auto;
+  min-width: 0;
+}
+.fm-state, .fm-task-meta, .fm-metric, .fm-caption {
+  font-size: 6;
+  text-color: #ff3f5068;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-task-meta {
+  padding-left: 2;
+  padding-right: 2;
+}
+.fm-metric-primary {
+  font-size: 8;
+  text-color: #ff1e5d8a;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-task-buttons {
+  padding-top: 3;
+  padding-bottom: 2;
+  gap-column: 5;
+}
+.fm-button-secondary, .fm-button-primary {
+  font-size: 6;
+  text-shadow: false;
+  padding-all: 1;
+}
+.fm-button-secondary {
+  base-background: sdf(#ffe8eef5, 6);
+  hover-background: sdf(#ffdce9f8, 6);
+  pressed-background: sdf(#ffc9dcf0, 6);
+  text-color: #ff26384f;
+}
+.fm-button-primary {
+  base-background: sdf(#ff4b91e8, 6);
+  hover-background: sdf(#ff65a4f0, 6);
+  pressed-background: sdf(#ff267bd7, 6);
+  text-color: #ffffffff;
+}
+.fm-button-secondary .__button_text__,
+.fm-button-primary .__button_text__ {
+  font-size: 6;
+  text-shadow: false;
+  text-align-horizontal: center;
+  text-align-vertical: center;
+}
+.fm-button-secondary .__button_text__ { text-color: #ff26384f; }
+.fm-button-primary .__button_text__ { text-color: #ffffffff; }
+.fm-progress-primary, .fm-progress-secondary { height: 10; }
+.fm-progress-primary .__progress-bar_bar-container__,
+.fm-progress-secondary .__progress-bar_bar-container__ {
+  background: sdf(#ffdbe5ed, 4);
+  padding-all: 1;
+}
+.fm-progress-primary .__progress-bar_bar__ {
+  background: sdf(#ff4b91e8, 4);
+  padding-all: 0;
+}
+.fm-progress-secondary .__progress-bar_bar__ {
+  background: sdf(#ff79acd9, 4);
+  padding-all: 0;
+}
+.fm-ore-card { gap-row: 3; margin-top: 6; }
+.fm-ore-total {
+  font-size: 6;
+  text-color: #ff53647a;
+  text-shadow: false;
+  text-align-horizontal: right;
+  text-align-vertical: center;
+}
+.fm-ore-list {
+  background: sdf(#fff1f5f8, 6);
+  padding-left: 4;
+  padding-right: 4;
+  padding-top: 4;
+  padding-bottom: 4;
+}
+.fm-ore-row {
+  background: sdf(#ffe7edf2, 5);
+  padding-left: 3;
+  padding-right: 3;
+}
+.fm-ore-name {
+  font-size: 6;
+  text-color: #ff26384f;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+.fm-ore-count {
+  font-size: 7;
+  text-color: #ff1e5d8a;
+  text-shadow: false;
+  text-align-horizontal: right;
+  text-align-vertical: center;
+}
+.fm-ore-empty {
+  width: 100%;
+  font-size: 6;
+  text-color: #ff65758a;
+  text-shadow: false;
+  text-align-vertical: center;
+}
+
 .vmp-button-secondary .__button_text__,
 .vmp-button-primary .__button_text__ {
   font-size: 6;

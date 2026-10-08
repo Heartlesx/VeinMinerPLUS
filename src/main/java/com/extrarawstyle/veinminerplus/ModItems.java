@@ -10,6 +10,8 @@ public final class ModItems {
 
     public static final DeferredItem<ChainMemoryCardItem> CHAIN_MEMORY_CARD = ITEMS.registerItem(
             "chain_memory_card", ChainMemoryCardItem::new, new Item.Properties().stacksTo(1));
+    public static final DeferredItem<StorageBindingCardItem> STORAGE_BINDER = ITEMS.registerItem(
+            "storage_binder", StorageBindingCardItem::new, new Item.Properties().stacksTo(1));
 
     private ModItems() {
     }

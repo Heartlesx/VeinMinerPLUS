@@ -9,15 +9,16 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.neoforged.fml.ModList;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandler;
 import net.neoforged.neoforge.items.ItemHandlerHelper;
+import com.extrarawstyle.veinminerplus.CuriosLookup;
 
 // Offers drops to the bound targets in slot order. The targets are resolved once per flush and then
 // reused for every stack, so a flush with many stacks does not repeat the lookups.
 final class StorageRouter {
-    private static final String AE2_MOD_ID = "ae2";
 
     private StorageRouter() {
     }
@@ -27,22 +28,51 @@ final class StorageRouter {
         void insert(ItemStack stack);
     }
 
-    static List<Sink> resolve(MinecraftServer server, ServerPlayer player, StorageBindings bindings) {
-        List<Sink> sinks = new ArrayList<>(3);
-        if (bindings.ae2() != null) {
-            // The mod id is checked before Ae2Storage is touched, so no AE2 class is loaded without AE2.
-            ServerLevel targetLevel = ModList.get().isLoaded(AE2_MOD_ID)
-                    ? server.getLevel(bindings.ae2().dimension())
-                    : null;
-            Sink ae2 = targetLevel == null ? null
-                    : Ae2Storage.sink(targetLevel, bindings.ae2().pos(), player);
-            if (ae2 != null) {
-                sinks.add(ae2);
-            }
-        }
+    static List<Sink> resolveFallback(MinecraftServer server, ServerPlayer player, StorageBindings bindings) {
+        List<Sink> sinks = new ArrayList<>(7);
+        addPlayerBackpacks(player, sinks);
         addBlock(server, bindings.sophisticated(), sinks);
         addBlock(server, bindings.functional(), sinks);
+        addPlayerInventory(player, sinks);
         return sinks;
+    }
+
+    // Sophisticated backpacks can be carried in the normal inventory or worn through Curios.
+    // Their item capability is the authoritative insertion API, so this also works for upgrades
+    // and modded backpack sizes without depending on the backpack implementation classes.
+    private static void addPlayerBackpacks(ServerPlayer player, List<Sink> sinks) {
+        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
+            addBackpack(player.getInventory().getItem(slot), sinks);
+        }
+        if (ModList.get().isLoaded("curios")) {
+            addBackpackHandler(CuriosLookup.equipped(player), sinks);
+        }
+    }
+
+    private static void addBackpackHandler(IItemHandler handler, List<Sink> sinks) {
+        if (handler == null) return;
+        for (int slot = 0; slot < handler.getSlots(); slot++) {
+            addBackpack(handler.getStackInSlot(slot), sinks);
+        }
+    }
+
+    private static void addBackpack(ItemStack backpack, List<Sink> sinks) {
+        if (backpack.isEmpty()) return;
+        var key = BuiltInRegistries.ITEM.getKey(backpack.getItem());
+        if (key == null || !key.getNamespace().equals("sophisticatedbackpacks")) return;
+        IItemHandler handler = backpack.getCapability(Capabilities.ItemHandler.ITEM);
+        if (handler != null) {
+            sinks.add(stack -> stack.setCount(ItemHandlerHelper.insertItemStacked(handler, stack.copy(), false).getCount()));
+        }
+    }
+
+    private static void addPlayerInventory(ServerPlayer player, List<Sink> sinks) {
+        sinks.add(stack -> {
+            ItemStack copy = stack.copy();
+            player.getInventory().add(copy);
+            stack.setCount(copy.getCount());
+            player.getInventory().setChanged();
+        });
     }
 
     static void insert(List<Sink> sinks, ItemStack stack) {

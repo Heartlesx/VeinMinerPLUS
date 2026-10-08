@@ -8,7 +8,11 @@
   "chain.veinminerplus.blast_ores": "Blast: all ores",
   "chain.veinminerplus.blast_any": "Blast: any harvestable block",
   "chain.veinminerplus.blast_logs": "Blast: logs",
+  "chain.veinminerplus.fast_mine": "Fast mining: chunks",
   "message.veinminerplus.broken": "VeinMiner: %s blocks",
+  "message.veinminerplus.fast_mine.invalid_selection": "The selected chunk area is invalid or too large.",
+  "message.veinminerplus.fast_mine.tool_required": "Fast mining requires a tool in the main hand.",
+  "message.veinminerplus.fast_mine.forced_chunks_skipped": "Fast mining skipped %s forced chunk(s); protected chunks are not modified.",
   "veinminerplus.configuration.title": "VeinMinerPlus Server Configuration",
   "veinminerplus.configuration.section.veinminerplus.common.toml": "Chain mining settings",
   "veinminerplus.configuration.section.veinminerplus.common.toml.title": "Chain mining settings",
@@ -64,8 +68,55 @@
   "veinminerplus.configuration.ae_section": "AE network storage",
   "veinminerplus.configuration.ae_hint": "Only chain-mining drops are affected; manual mining behavior is unchanged.",
   "veinminerplus.configuration.header_hint": "Server rules arranged in a Miuix-inspired layout",
-  "veinminerplus.configuration.version": "VMP 3.2 · LDLib2 UI",
+  "veinminerplus.configuration.version": "VMP 1.1 · Fast mining map",
   "veinminerplus.configuration.storeDropsInAe": "Store drops in AE network",
   "veinminerplus.configuration.enablePerformanceLog": "Enable VMP performance logging",
-  "veinminerplus.configuration.navigation": "NAVIGATION"
+  "veinminerplus.configuration.navigation": "NAVIGATION",
+  "screen.veinminerplus.fast_mine": "Fast mining: chunk selection",
+  "screen.veinminerplus.single": "Single",
+  "screen.veinminerplus.rectangle": "Rectangle",
+  "screen.veinminerplus.free": "Free",
+  "screen.veinminerplus.clear": "Clear",
+  "screen.veinminerplus.cancel": "Cancel task",
+  "screen.veinminerplus.confirm": "Start mining",
+  "screen.veinminerplus.selection": "Selected %s×%s (%s chunks)",
+  "screen.veinminerplus.progress": "Loaded %s/%s   Broken %s   Ores %s",
+  "screen.veinminerplus.state": "State: %s"
+  ,"screen.veinminerplus.overview.title": "Fast Mining Mode"
+  ,"screen.veinminerplus.overview.subtitle": "Select chunk work area"
+  ,"screen.veinminerplus.dimension": "Dimension: %s"
+  ,"screen.veinminerplus.map.title": "Chunk map"
+  ,"screen.veinminerplus.map.legend": "Loaded    Unloaded    Player    Selection"
+  ,"screen.veinminerplus.map.zoom": "View: %s x %s chunks"
+  ,"screen.veinminerplus.player_position": "Player chunk: %s, %s"
+  ,"screen.veinminerplus.task.title": "Mining task"
+  ,"screen.veinminerplus.task.progress": "Completion: %s%%"
+  ,"screen.veinminerplus.stats.title": "Work statistics"
+  ,"screen.veinminerplus.stats.chunks": "Chunks: loaded %s / %s"
+  ,"screen.veinminerplus.stats.blocks": "Blocks: broken %s, processed %s/%s"
+  ,"screen.veinminerplus.stats.scanned": "Scanned: %s/%s"
+  ,"screen.veinminerplus.stats.ores": "Ore blocks found: %s"
+  ,"screen.veinminerplus.current.title": "Selection origin"
+  ,"screen.veinminerplus.current.chunk": "Chunk: %s, %s"
+  ,"screen.veinminerplus.ores.title": "Ore output"
+  ,"screen.veinminerplus.ores.total": "Ore blocks: %s"
+  ,"screen.veinminerplus.ores.pending": "No ore output yet"
+  ,"screen.veinminerplus.ores.complete": "Finished · total ore count available"
+  ,"screen.veinminerplus.state.idle": "Idle"
+  ,"screen.veinminerplus.state.loading": "Loading chunks"
+  ,"screen.veinminerplus.state.scanning": "Scanning blocks"
+  ,"screen.veinminerplus.state.mining": "Mining"
+  ,"screen.veinminerplus.state.paused": "Paused"
+  ,"screen.veinminerplus.state.completed": "Completed"
+  ,"screen.veinminerplus.state.cancelled": "Cancelled"
+  ,"screen.veinminerplus.state.failed": "Failed"
+  ,"message.veinminerplus.fast_mine.completed": "Fast mining finished: %s blocks, %s ore blocks, %s s. Destination: %s, stored: %s, dropped: %s, pending retry: %s."
+  ,"message.veinminerplus.fast_mine.cancelled": "Fast mining cancelled: %s blocks, %s ore blocks, %s s. Destination: %s, stored: %s, dropped: %s, pending retry: %s."
+  ,"message.veinminerplus.fast_mine.failed": "Fast mining failed: %s blocks, %s ore blocks, %s s. Destination: %s, stored: %s, dropped: %s, pending retry: %s."
+  ,"message.veinminerplus.fast_mine.destination.ae": "AE network"
+  ,"message.veinminerplus.fast_mine.destination.ae_and_container": "AE network and player containers"
+  ,"message.veinminerplus.fast_mine.destination.container": "backpack/inventory"
+  ,"message.veinminerplus.fast_mine.destination.pending": "pending retry"
+  ,"message.veinminerplus.fast_mine.destination.ground": "ground drops"
+  ,"message.veinminerplus.fast_mine.destination.none": "none"
 }

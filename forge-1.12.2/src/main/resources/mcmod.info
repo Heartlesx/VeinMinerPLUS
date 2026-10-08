@@ -1,0 +1,16 @@
+[
+{
+  "modid": "veinminerplus",
+  "name": "VeinMinerPlus",
+  "description": "Server-authoritative chain mining for Minecraft 1.12.2 Forge.",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "url": "https://github.com/Heartlesx/VeinMinerPLUS",
+  "updateUrl": "",
+  "authorList": ["Extra_RawStyle"],
+  "credits": "",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": []
+}
+]

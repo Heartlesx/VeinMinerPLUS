@@ -46,7 +46,7 @@ public final class Config {
     public static final ModConfigSpec.BooleanValue ENABLE_PERFORMANCE_LOG = BUILDER
             .comment("启用 VMP 连锁挖掘性能检测日志。")
             .translation("veinminerplus.configuration.enablePerformanceLog")
-            .define("enablePerformanceLog", false);
+            .define("enablePerformanceLog", true);
 
     public static final ModConfigSpec.BooleanValue STORAGE_BINDING = BUILDER
             .comment("启用后，连锁挖掘的掉落物优先送入存储绑定卡绑定的存储，塞不下的才掉在地上；默认开启。")

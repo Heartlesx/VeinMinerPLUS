@@ -39,6 +39,7 @@ base {
 
 tasks.named('jar', Jar).configure {
     archiveClassifier = 'neoforge'
+    archiveFileName = "${mod_id}-neoforge-${minecraft_version}-${mod_version}.jar"
 }
 
 // Mojang ships Java 21 to end users in 1.21.1, so mods should target Java 21.
@@ -189,6 +190,11 @@ publishing {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+    // Keep compiler diagnostics visible during routine `check`/`build` runs. NeoForge
+    // mappings still produce a small number of dependency deprecation warnings, but
+    // enabling lint catches accidental raw types, unchecked calls and fall-throughs
+    // introduced by this project.
+    options.compilerArgs += ['-Xlint:all']
 }
 
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.

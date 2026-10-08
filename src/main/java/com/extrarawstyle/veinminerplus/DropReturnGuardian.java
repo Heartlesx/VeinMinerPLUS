@@ -20,6 +20,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import com.extrarawstyle.veinminerplus.ChainEvents;
 
 /**
  * Main-thread, server-lifecycle-bound retry queue for temporary AE failures.

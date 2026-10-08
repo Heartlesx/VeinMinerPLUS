@@ -11,6 +11,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.fml.ModList;
+import com.extrarawstyle.veinminerplus.ModItems;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 
@@ -40,13 +41,11 @@ public final class StorageBindingEvents {
         }
 
         BlockPos pos = event.getPos();
-        StorageBindings current = StorageBindings.read(card);
         String namespace = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).getNamespace();
         // The mod id is checked before Ae2Storage is touched, so no AE2 class is loaded without AE2.
         if (ModList.get().isLoaded(AE2_MOD_ID) && AE2_NAMESPACE.equals(namespace)) {
             if (Ae2Storage.canBind(level, pos)) {
-                bind(event, player, card, current.withAe2(target(level, pos)),
-                        "message.veinminerplus.binder.ae2", pos);
+                bind(event, player, card, StorageBindings.TYPE_AE2, target(level, pos), pos);
             } else {
                 player.displayClientMessage(
                         Component.translatable("message.veinminerplus.binder.ae2_offline"), true);
@@ -54,22 +53,21 @@ public final class StorageBindingEvents {
             return;
         }
         if (SOPHISTICATED_NAMESPACES.contains(namespace)) {
-            bind(event, player, card, current.withSophisticated(target(level, pos)),
-                    "message.veinminerplus.binder.sophisticated", pos);
+            bind(event, player, card, StorageBindings.TYPE_SOPHISTICATED, target(level, pos), pos);
         } else if (namespace.equals(FUNCTIONAL_NAMESPACE)) {
-            bind(event, player, card, current.withFunctional(target(level, pos)),
-                    "message.veinminerplus.binder.functional", pos);
+            bind(event, player, card, StorageBindings.TYPE_FUNCTIONAL, target(level, pos), pos);
         } else {
             // Nothing to bind here, so the click is left alone and the block behaves as always.
             player.displayClientMessage(Component.translatable("message.veinminerplus.binder.unsupported"), true);
         }
     }
 
+    // Binding always replaces the target the card already holds, so a card never points at two places.
     private static void bind(PlayerInteractEvent.RightClickBlock event, ServerPlayer player, ItemStack card,
-            StorageBindings bindings, String messageKey, BlockPos pos) {
-        StorageBindings.write(card, bindings);
+            String type, StorageBindings.BlockTarget target, BlockPos pos) {
+        StorageBindings.write(card, new StorageBindings(type, target));
         Component where = Component.literal(pos.getX() + ", " + pos.getY() + ", " + pos.getZ());
-        player.displayClientMessage(Component.translatable(messageKey, where), true);
+        player.displayClientMessage(Component.translatable("message.veinminerplus.binder." + type, where), true);
         event.setCanceled(true);
     }
 

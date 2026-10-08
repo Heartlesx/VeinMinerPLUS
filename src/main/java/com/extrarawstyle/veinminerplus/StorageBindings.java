@@ -17,13 +17,22 @@ import net.minecraft.world.level.Level;
 import net.neoforged.fml.ModList;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandler;
+import com.extrarawstyle.veinminerplus.ModItems;
+import com.extrarawstyle.veinminerplus.CuriosLookup;
 
-// The three slots of the storage binding card. They are fixed per mod: an AE2 network, Sophisticated
-// Storage (a barrel/chest or a backpack placed on the ground) and Functional Storage. Chains are
-// inserted in that order and whatever none of them accepts is still dropped on the ground.
-public record StorageBindings(BlockTarget ae2, BlockTarget sophisticated, BlockTarget functional) {
-    static final StorageBindings EMPTY = new StorageBindings(null, null, null);
+// The storage binding card holds a single binding: the kind of storage it was bound to and the block it
+// points at. Binding another block replaces the old one, and whatever the bound target does not accept
+// is still dropped on the ground.
+public record StorageBindings(String type, BlockTarget target) {
+    static final String TYPE_AE2 = "ae2";
+    static final String TYPE_SOPHISTICATED = "sophisticated";
+    static final String TYPE_FUNCTIONAL = "functional";
+
+    static final StorageBindings EMPTY = new StorageBindings(null, null);
     private static final String KEY = "veinminerplus_bindings";
+    // The binding is saved under the key of its type. Every key is read, so a card that was bound back
+    // when the card held one binding per type keeps the first target it had instead of losing it.
+    private static final List<String> TYPES = List.of(TYPE_AE2, TYPE_SOPHISTICATED, TYPE_FUNCTIONAL);
     private static final String CURIOS_MOD_ID = "curios";
 
     // A target is remembered by dimension and position, so it survives a logout or a restart. A
@@ -53,8 +62,14 @@ public record StorageBindings(BlockTarget ae2, BlockTarget sophisticated, BlockT
         if (data == null) {
             return EMPTY;
         }
-        CompoundTag tag = data.copyTag().getCompound(KEY);
-        return new StorageBindings(load(tag, "ae2"), load(tag, "sophisticated"), load(tag, "functional"));
+        CompoundTag saved = data.copyTag().getCompound(KEY);
+        for (String type : TYPES) {
+            BlockTarget target = load(saved, type);
+            if (target != null) {
+                return new StorageBindings(type, target);
+            }
+        }
+        return EMPTY;
     }
 
     static void write(ItemStack stack, StorageBindings bindings) {
@@ -63,14 +78,12 @@ public record StorageBindings(BlockTarget ae2, BlockTarget sophisticated, BlockT
             return;
         }
         CompoundTag saved = new CompoundTag();
-        save(saved, "ae2", bindings.ae2());
-        save(saved, "sophisticated", bindings.sophisticated());
-        save(saved, "functional", bindings.functional());
+        saved.put(bindings.type(), bindings.target().save());
         CustomData.update(DataComponents.CUSTOM_DATA, stack, tag -> tag.put(KEY, saved));
     }
 
-    // Returns the bindings of the first card the player carries. It counts whether the card sits in
-    // the inventory, inside a backpack, or is worn in a trinket slot.
+    // Returns the binding of the first card the player carries. It counts whether the card sits in the
+    // inventory, inside a backpack, or is worn in a trinket slot.
     static StorageBindings findIn(Player player) {
         Inventory inventory = player.getInventory();
         for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
@@ -123,38 +136,17 @@ public record StorageBindings(BlockTarget ae2, BlockTarget sophisticated, BlockT
         return null;
     }
 
-    StorageBindings withAe2(BlockTarget target) {
-        return new StorageBindings(target, sophisticated, functional);
-    }
-
-    StorageBindings withSophisticated(BlockTarget target) {
-        return new StorageBindings(ae2, target, functional);
-    }
-
-    StorageBindings withFunctional(BlockTarget target) {
-        return new StorageBindings(ae2, sophisticated, target);
-    }
-
     boolean isEmpty() {
-        return ae2 == null && sophisticated == null && functional == null;
+        return target == null;
     }
 
     List<Component> describe() {
-        return List.of(line("ae2", ae2), line("sophisticated", sophisticated),
-                line("functional", functional));
-    }
-
-    private static Component line(String slot, BlockTarget target) {
-        return Component.translatable("item.veinminerplus.storage_binder." + slot,
-                target == null ? Component.translatable("item.veinminerplus.storage_binder.empty")
-                        : Component.literal(target.pos().getX() + ", " + target.pos().getY() + ", "
-                                + target.pos().getZ() + " @ " + target.dimension().location()));
-    }
-
-    private static void save(CompoundTag tag, String key, BlockTarget target) {
-        if (target != null) {
-            tag.put(key, target.save());
+        if (isEmpty()) {
+            return List.of(Component.translatable("item.veinminerplus.storage_binder.empty"));
         }
+        return List.of(Component.translatable("item.veinminerplus.storage_binder." + type,
+                Component.literal(target.pos().getX() + ", " + target.pos().getY() + ", "
+                        + target.pos().getZ() + " @ " + target.dimension().location())));
     }
 
     private static BlockTarget load(CompoundTag tag, String key) {

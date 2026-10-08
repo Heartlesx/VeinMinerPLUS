@@ -1,16 +1,26 @@
 package com.extrarawstyle.veinminerplus;
 
+import com.extrarawstyle.veinminerplus.client.VeinMinerPlusClient;
+import com.extrarawstyle.veinminerplus.ChainEvents;
+import com.extrarawstyle.veinminerplus.ChainMode;
+import com.extrarawstyle.veinminerplus.Config;
+
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 public final class NetworkHandler {
-    private static final String PROTOCOL_VERSION = "3";
+    private static final String PROTOCOL_VERSION = "5";
 
     private NetworkHandler() {
     }
@@ -21,6 +31,25 @@ public final class NetworkHandler {
                 (payload, context) -> context.enqueueWork(() -> ChainEvents.setKeyHeld(context.player(), payload.held())));
         registrar.playToServer(ModeChangePayload.TYPE, ModeChangePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> ChainEvents.setMode(context.player(), payload.mode())));
+        registrar.playToServer(FastMineSelectionPayload.TYPE, FastMineSelectionPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer player && ChainEvents.isFastMine(player)) {
+                        ResourceKey<net.minecraft.world.level.Level> dimension = ResourceKey.create(
+                                Registries.DIMENSION, payload.dimension());
+                        FastMineTaskManager.begin(player, FastMineSelection.rectangle(dimension,
+                                payload.firstChunkX(), payload.firstChunkZ(), payload.secondChunkX(),
+                                payload.secondChunkZ()));
+                    }
+                }));
+        registrar.playToServer(FastMineCancelPayload.TYPE, FastMineCancelPayload.STREAM_CODEC,
+                (payload, context) -> {
+                    // Cancellation must not wait behind an overloaded server task
+                    // queue.  Only the UUID is recorded here; world mutation and
+                    // ticket cleanup are still performed by the server thread.
+                    if (context.player() instanceof ServerPlayer player) {
+                        FastMineTaskManager.requestCancel(player.getUUID());
+                    }
+                });
         registrar.playToServer(ConfigRequestPayload.TYPE, ConfigRequestPayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> {
                     if (context.player() instanceof ServerPlayer player) {
@@ -29,6 +58,13 @@ public final class NetworkHandler {
                 }));
         registrar.playToClient(ConfigSnapshotPayload.TYPE, ConfigSnapshotPayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> VeinMinerPlusClient.openConfigScreen(payload)));
+        registrar.playToClient(FastMineProgressPayload.TYPE, FastMineProgressPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> VeinMinerPlusClient.updateFastMineProgress(
+                        new FastMineProgress(payload.loadedChunks(), payload.totalChunks(), payload.scannedBlocks(),
+                                payload.totalBlocks(), payload.brokenBlocks(), payload.foundOres(),
+                                payload.targetBlocks(), payload.processedBlocks(), payload.oreBreakdown(),
+                                FastMineProgress.State.values()[Mth.clamp(payload.state(), 0,
+                                        FastMineProgress.State.values().length - 1)]))));
         registrar.playToServer(ConfigUpdatePayload.TYPE, ConfigUpdatePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> {
                     if (context.player() instanceof ServerPlayer player) {
@@ -37,19 +73,36 @@ public final class NetworkHandler {
                 }));
     }
 
-    static void sendKeyState(boolean held) {
+    public static void sendKeyState(boolean held) {
         PacketDistributor.sendToServer(new KeyStatePayload(held));
     }
 
-    static void sendModeChange(ChainMode mode) {
+    public static void sendModeChange(ChainMode mode) {
         PacketDistributor.sendToServer(new ModeChangePayload(mode.ordinal()));
+    }
+
+    public static void sendFastMineSelection(ResourceLocation dimension, int firstChunkX, int firstChunkZ,
+            int secondChunkX, int secondChunkZ) {
+        PacketDistributor.sendToServer(new FastMineSelectionPayload(dimension, firstChunkX, firstChunkZ,
+                secondChunkX, secondChunkZ));
+    }
+
+    public static void sendFastMineCancel() {
+        PacketDistributor.sendToServer(new FastMineCancelPayload());
+    }
+
+    static void sendFastMineProgress(ServerPlayer player, FastMineProgress progress) {
+        PacketDistributor.sendToPlayer(player, new FastMineProgressPayload(progress.loadedChunks(),
+                progress.totalChunks(), progress.scannedBlocks(), progress.totalBlocks(), progress.brokenBlocks(),
+                progress.foundOres(), progress.targetBlocks(), progress.processedBlocks(), progress.oreBreakdown(),
+                progress.state().ordinal()));
     }
 
     static void requestConfigScreen() {
         PacketDistributor.sendToServer(new ConfigRequestPayload());
     }
 
-    static void sendConfigUpdate(ConfigUpdatePayload payload) {
+    public static void sendConfigUpdate(ConfigUpdatePayload payload) {
         PacketDistributor.sendToServer(payload);
     }
 
@@ -115,6 +168,45 @@ public final class NetworkHandler {
         }
     }
 
+    public record FastMineSelectionPayload(ResourceLocation dimension, int firstChunkX, int firstChunkZ,
+            int secondChunkX, int secondChunkZ) implements CustomPacketPayload {
+        public static final Type<FastMineSelectionPayload> TYPE = new Type<>(
+                ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "fast_mine_selection"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, FastMineSelectionPayload> STREAM_CODEC =
+                StreamCodec.of(NetworkHandler::writeFastMineSelection, NetworkHandler::readFastMineSelection);
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    public record FastMineProgressPayload(long loadedChunks, long totalChunks, long scannedBlocks, long totalBlocks,
+            long brokenBlocks, long foundOres, long targetBlocks, long processedBlocks,
+            Map<ResourceLocation, Long> oreBreakdown, int state) implements CustomPacketPayload {
+        public static final Type<FastMineProgressPayload> TYPE = new Type<>(
+                ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "fast_mine_progress"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, FastMineProgressPayload> STREAM_CODEC =
+                StreamCodec.of(NetworkHandler::writeFastMineProgress, NetworkHandler::readFastMineProgress);
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    public record FastMineCancelPayload() implements CustomPacketPayload {
+        public static final Type<FastMineCancelPayload> TYPE = new Type<>(
+                ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "fast_mine_cancel"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, FastMineCancelPayload> STREAM_CODEC = StreamCodec.of(
+                (buffer, payload) -> {}, buffer -> new FastMineCancelPayload());
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
     public record ConfigRequestPayload() implements CustomPacketPayload {
         public static final Type<ConfigRequestPayload> TYPE = new Type<>(
                 ResourceLocation.fromNamespaceAndPath(VeinMinerPlus.MODID, "config_request"));
@@ -168,6 +260,59 @@ public final class NetworkHandler {
         writeConfig(buffer, payload.maxNormalBlocks(), payload.maxNormalBlocksPerTick(), payload.maxBlastBlocks(),
                 payload.maxBlastBlocksPerTick(), payload.blastSearchDistance(), payload.noHungerCost(),
                 payload.storeDropsInAe(), payload.enablePerformanceLog());
+    }
+
+    private static void writeFastMineSelection(RegistryFriendlyByteBuf buffer, FastMineSelectionPayload payload) {
+        ResourceLocation.STREAM_CODEC.encode(buffer, payload.dimension());
+        buffer.writeInt(payload.firstChunkX());
+        buffer.writeInt(payload.firstChunkZ());
+        buffer.writeInt(payload.secondChunkX());
+        buffer.writeInt(payload.secondChunkZ());
+    }
+
+    private static FastMineSelectionPayload readFastMineSelection(RegistryFriendlyByteBuf buffer) {
+        return new FastMineSelectionPayload(ResourceLocation.STREAM_CODEC.decode(buffer), buffer.readInt(),
+                buffer.readInt(), buffer.readInt(), buffer.readInt());
+    }
+
+    private static void writeFastMineProgress(RegistryFriendlyByteBuf buffer, FastMineProgressPayload payload) {
+        buffer.writeVarLong(payload.loadedChunks());
+        buffer.writeVarLong(payload.totalChunks());
+        buffer.writeVarLong(payload.scannedBlocks());
+        buffer.writeVarLong(payload.totalBlocks());
+        buffer.writeVarLong(payload.brokenBlocks());
+        buffer.writeVarLong(payload.foundOres());
+        buffer.writeVarLong(payload.targetBlocks());
+        buffer.writeVarLong(payload.processedBlocks());
+        buffer.writeVarInt(Math.min(128, payload.oreBreakdown().size()));
+        int written = 0;
+        for (Map.Entry<ResourceLocation, Long> entry : payload.oreBreakdown().entrySet()) {
+            if (written++ >= 128) break;
+            ResourceLocation.STREAM_CODEC.encode(buffer, entry.getKey());
+            buffer.writeVarLong(entry.getValue());
+        }
+        buffer.writeVarInt(payload.state());
+    }
+
+    private static FastMineProgressPayload readFastMineProgress(RegistryFriendlyByteBuf buffer) {
+        // Keep the read order identical to writeFastMineProgress.  The payload is
+        // length-prefixed only after the scalar counters; reading the ore count
+        // first shifts every field and makes the client render a frozen/invalid UI.
+        long loadedChunks = buffer.readVarLong();
+        long totalChunks = buffer.readVarLong();
+        long scannedBlocks = buffer.readVarLong();
+        long totalBlocks = buffer.readVarLong();
+        long brokenBlocks = buffer.readVarLong();
+        long foundOres = buffer.readVarLong();
+        long targetBlocks = buffer.readVarLong();
+        long processedBlocks = buffer.readVarLong();
+        Map<ResourceLocation, Long> ores = new LinkedHashMap<>();
+        int oreCount = Mth.clamp(buffer.readVarInt(), 0, 128);
+        for (int i = 0; i < oreCount; i++) {
+            ores.put(ResourceLocation.STREAM_CODEC.decode(buffer), buffer.readVarLong());
+        }
+        return new FastMineProgressPayload(loadedChunks, totalChunks, scannedBlocks, totalBlocks,
+                brokenBlocks, foundOres, targetBlocks, processedBlocks, ores, buffer.readVarInt());
     }
 
     private static ConfigSnapshotPayload readConfigSnapshot(RegistryFriendlyByteBuf buffer) {

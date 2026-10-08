@@ -34,15 +34,21 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.DiggerItem;
+import net.minecraft.world.item.SwordItem;
+import net.minecraft.world.item.TieredItem;
+import net.minecraft.world.item.Tiers;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoublePlantBlock;
 import net.minecraft.world.level.block.GameMasterBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -62,6 +68,7 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 
 public final class ChainEvents {
+
     // Work is deliberately bounded so one large blast cannot monopolize the server thread.
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
@@ -107,10 +114,12 @@ public final class ChainEvents {
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
-    private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
+    /** Server-thread-only drop capture. World mutation and BlockDropsEvent are serialized. */
+    private static CaptureContext activeDropCapture;
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
     private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
     private static final Map<Block, Boolean> ORE_CACHE = new IdentityHashMap<>();
+    private static final Map<Block, Integer> FAST_MINE_ORE_LEVEL_CACHE = new IdentityHashMap<>();
     private static final Map<Block, Boolean> ALLTHEMODIUM_CACHE = new IdentityHashMap<>();
     private static int roundRobinStart;
     private static long serverTickStartedNanos;
@@ -119,6 +128,7 @@ public final class ChainEvents {
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         UUID id = event.getEntity().getUUID();
+        FastMineTaskManager.cancel(id);
         if (event.getEntity() instanceof ServerPlayer player) {
             ChainJob job = ACTIVE_JOBS.get(id);
             if (job != null) {
@@ -177,6 +187,9 @@ public final class ChainEvents {
         }
 
         ChainMode mode = PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL);
+        if (mode.isFastMine()) {
+            return;
+        }
         if (!isEligible(level, player, target, state, state.getBlock(), mode)) {
             return;
         }
@@ -210,7 +223,7 @@ public final class ChainEvents {
             }
         }
 
-        CaptureContext capture = CAPTURING_DROPS.get();
+        CaptureContext capture = activeDropCapture;
         if (drops == null && capture != null && capture.hasPosition()
                 && matchesDropPosition(event.getPos(), capture.origin(), capture.doublePlant())) {
             drops = capture.drops();
@@ -229,8 +242,9 @@ public final class ChainEvents {
             return;
         }
 
+        long multiplier = capture != null && drops == capture.drops() ? capture.itemMultiplier() : 1L;
         for (ItemEntity item : event.getDrops()) {
-            drops.add(item.getItem());
+            drops.add(item.getItem(), multiplier);
         }
         event.getDrops().clear();
         drops.addExperience(event.getDroppedExperience());
@@ -250,6 +264,7 @@ public final class ChainEvents {
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onServerTick(ServerTickEvent.Post event) {
         MinecraftServer server = event.getServer();
+        FastMineTaskManager.tick(server);
         DropReturnGuardian.tick(server);
         if (ACTIVE_JOBS.isEmpty()) {
             PERFORMANCE_LOG.flush();
@@ -294,6 +309,8 @@ public final class ChainEvents {
 
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
+        PerformanceFileLog.start();
+        FastMineRuntime.start();
         DropReturnGuardian.reset();
         PERFORMANCE_LOG.reset();
         serverTickStartedNanos = 0L;
@@ -302,12 +319,14 @@ public final class ChainEvents {
                     "[VMP Perf] enabled build=perf-log-v3 intervalActiveTicks={} flushOnIdle=true dynamicTickTargetMs={} postReserveMs={}",
                     PERFORMANCE_LOG_INTERVAL_TICKS, TARGET_TOTAL_TICK_NANOS / NANOS_PER_MILLISECOND,
                     POST_TICK_RESERVE_NANOS / NANOS_PER_MILLISECOND);
+            PerformanceFileLog.write("event=performance_enabled intervalTicks=" + PERFORMANCE_LOG_INTERVAL_TICKS);
         }
         roundRobinStart = 0;
     }
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
+        FastMineTaskManager.cancelAll();
         for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
             job.finish();
         }
@@ -318,13 +337,18 @@ public final class ChainEvents {
             }
         }
         DropReturnGuardian.shutdown(event.getServer());
+        FastMineRuntime.stop();
         PERFORMANCE_LOG.flush();
+        PerformanceFileLog.write("event=server_stopping");
+        PerformanceFileLog.stop();
         clearRuntimeState();
     }
 
     @SubscribeEvent
     public void onServerStopped(ServerStoppedEvent event) {
+        FastMineRuntime.stop();
         DropReturnGuardian.reset();
+        PerformanceFileLog.stop();
         clearRuntimeState();
     }
 
@@ -342,7 +366,7 @@ public final class ChainEvents {
         PLAYER_MODES.clear();
         ORE_CACHE.clear();
         ALLTHEMODIUM_CACHE.clear();
-        CAPTURING_DROPS.remove();
+        activeDropCapture = null;
     }
     static void setKeyHeld(Player player, boolean held) {
         if (!(player instanceof ServerPlayer serverPlayer)) {
@@ -358,8 +382,17 @@ public final class ChainEvents {
 
     static void setMode(Player player, int ordinal) {
         if (player instanceof ServerPlayer serverPlayer) {
-            PLAYER_MODES.put(serverPlayer.getUUID(), ChainMode.fromOrdinal(ordinal));
+            ChainMode mode = ChainMode.fromOrdinal(ordinal);
+            PLAYER_MODES.put(serverPlayer.getUUID(), mode);
+            if (!mode.isFastMine()) {
+                FastMineTaskManager.cancel(serverPlayer.getUUID());
+            }
         }
+    }
+
+    static boolean isFastMine(Player player) {
+        return player instanceof ServerPlayer serverPlayer
+                && PLAYER_MODES.getOrDefault(serverPlayer.getUUID(), ChainMode.NORMAL).isFastMine();
     }
 
     private static void startAfterPrimaryBreak(ServerLevel level, ServerPlayer player, BlockPos target,
@@ -387,7 +420,7 @@ public final class ChainEvents {
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
-        if (state.isAir() || !matchesMode(state, targetBlock, mode)) {
+        if (state.isAir() || state.is(Blocks.BEDROCK) || !matchesMode(state, targetBlock, mode)) {
             return false;
         }
         if (!level.mayInteract(player, pos)
@@ -420,6 +453,205 @@ public final class ChainEvents {
             ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
             return id != null && id.getPath().endsWith("_ore");
         });
+    }
+
+    static boolean isOreForFastMine(BlockState state) {
+        return isOre(state);
+    }
+
+    /** Captures the tool once at task start; execution never re-reads the player's hand. */
+    static FastMineTool fastMineTool(ItemStack stack) {
+        if (stack.isEmpty() || !isFastMineTool(stack)) {
+            return null;
+        }
+        int level = stack.getItem() instanceof TieredItem tiered ? fastMineTierLevel(tiered.getTier()) : -1;
+        return new FastMineTool(stack.copy(), Math.max(0, level));
+    }
+
+    private static int fastMineTierLevel(net.minecraft.world.item.Tier tier) {
+        if (tier == Tiers.NETHERITE) return 4;
+        if (tier == Tiers.DIAMOND) return 3;
+        if (tier == Tiers.IRON) return 2;
+        if (tier == Tiers.STONE || tier == Tiers.GOLD) return 1;
+        if (tier == Tiers.WOOD) return 0;
+        // A custom tier is checked through ItemStack.isCorrectToolForDrops below.
+        return -1;
+    }
+
+    private static boolean isFastMineTool(ItemStack stack) {
+        Item item = stack.getItem();
+        return item instanceof DiggerItem
+                || item instanceof TieredItem && !(item instanceof SwordItem)
+                || stack.is(ItemTags.PICKAXES) || stack.is(ItemTags.AXES)
+                || stack.is(ItemTags.SHOVELS) || stack.is(ItemTags.HOES);
+    }
+
+    /** Returns the vanilla/NeoForge mining tier when the block exposes a standard tier tag. */
+    private static int fastMineRequiredLevel(BlockState state) {
+        return FAST_MINE_ORE_LEVEL_CACHE.computeIfAbsent(state.getBlock(), ignored -> {
+            if (state.is(BlockTags.NEEDS_DIAMOND_TOOL)) return 3;
+            if (state.is(BlockTags.NEEDS_IRON_TOOL)) return 2;
+            if (state.is(BlockTags.NEEDS_STONE_TOOL)) return 1;
+            return -1;
+        });
+    }
+
+    /**
+     * Compatibility fallback for custom modded tiers: when no standard tag is
+     * available, let the item's own correct-tool predicate decide.
+     */
+    static boolean fastMineCanMineOre(BlockState state, FastMineTool tool) {
+        if (!state.requiresCorrectToolForDrops()) {
+            return true;
+        }
+        int required = fastMineRequiredLevel(state);
+        return required >= 0 ? tool.miningLevel() >= required
+                || tool.stack().isCorrectToolForDrops(state)
+                : tool.stack().isCorrectToolForDrops(state);
+    }
+
+    record FastMineTool(ItemStack stack, int miningLevel) {
+    }
+
+    /**
+     * Fast mining deliberately has no vanilla tool-harvest or durability gate.
+     * The selected tool is still passed to the block for normal loot calculation,
+     * while the task itself only refuses air, bedrock and genuinely unbreakable
+     * blocks. This prevents a finite tool from silently stopping a whole task.
+     */
+    private static boolean isFastMineEligible(ServerLevel level, ServerPlayer player, BlockPos pos,
+            BlockState state) {
+        if (state.isAir() || state.is(Blocks.BEDROCK) || !level.mayInteract(player, pos)) {
+            return false;
+        }
+        return state.getBlock() instanceof net.minecraft.world.level.block.GameMasterBlock
+                ? player.canUseGameMasterBlocks()
+                : isAllthemodiumBlock(state) || state.getDestroySpeed(level, pos) >= 0.0F;
+    }
+
+    /** Breaks one server-authoritative fast-mine target and routes its drops normally. */
+    static boolean breakFastMineBlock(ServerLevel level, ServerPlayer player, BlockPos pos, int fortuneMultiplier) {
+        FastMineDropSession session = new FastMineDropSession(player, player.getMainHandItem());
+        boolean destroyed = session.breakBlock(level, player, pos, fortuneMultiplier);
+        session.finish(level, player, destroyed ? 1 : 0);
+        return destroyed;
+    }
+
+    static FastMineDropSession createFastMineDropSession(ServerPlayer player) {
+        return new FastMineDropSession(player, player.getMainHandItem());
+    }
+
+    static FastMineDropSession createFastMineDropSession(ServerPlayer player, ItemStack tool) {
+        return new FastMineDropSession(player, tool);
+    }
+
+    static final class FastMineDropSession {
+        private final DropBuffer drops;
+        private final CaptureContext capture;
+        private final ItemStack tool;
+        private CaptureContext previousBatchCapture;
+        private boolean batchCaptureBound;
+
+        private FastMineDropSession(ServerPlayer player, ItemStack tool) {
+            this.drops = new DropBuffer(ChainMemoryCardItem.findBoundTarget(player));
+            this.capture = new CaptureContext(drops);
+            this.tool = tool.copy();
+        }
+
+        boolean breakBlock(ServerLevel level, ServerPlayer player, BlockPos pos, int fortuneMultiplier) {
+            return breakBlock(level, player, pos, fortuneMultiplier, true);
+        }
+
+        boolean breakBlock(ServerLevel level, ServerPlayer player, BlockPos pos, int fortuneMultiplier,
+                boolean applyFortune) {
+            BlockState state = level.getBlockState(pos);
+            if (!isFastMineEligible(level, player, pos, state)) return false;
+            CaptureContext previousCapture = activeDropCapture;
+            if (previousCapture != capture) {
+                activeDropCapture = capture;
+            }
+            try {
+                capture.begin(pos, state.getBlock() instanceof DoublePlantBlock,
+                        applyFortune && isOreForFastMine(state) ? fortuneMultiplier : 1);
+                // A selected chunk can be far outside the player's normal interaction
+                // distance. Keep permission, harvest and drop checks, but use the same
+                // server-side destroy path without the vanilla reach-distance gate.
+                boolean destroyed = breakWithoutBreakEvent(level, player, pos, state, true, false, tool);
+                return destroyed;
+            } finally {
+                if (previousCapture == null) {
+                    activeDropCapture = null;
+                } else if (previousCapture != capture) {
+                    activeDropCapture = previousCapture;
+                }
+            }
+        }
+
+        /** Binds one capture context for a whole server-thread mining batch. */
+        void beginBatchCapture() {
+            previousBatchCapture = activeDropCapture;
+            activeDropCapture = capture;
+            batchCaptureBound = true;
+        }
+
+        void endBatchCapture() {
+            if (!batchCaptureBound) return;
+            activeDropCapture = previousBatchCapture;
+            previousBatchCapture = null;
+            batchCaptureBound = false;
+        }
+
+        FastMineSettlement finish(ServerLevel level, ServerPlayer player, int brokenBlocks) {
+            long started = System.nanoTime();
+            // Fast mining can collect thousands of XP points in one operation. Granting
+            // them directly avoids spawning one entity per XP orb and keeps large selections
+            // from saturating the entity tick loop.
+            drops.flush(level, player, brokenBlocks, true);
+            long elapsedNanos = System.nanoTime() - started;
+            if (Config.ENABLE_PERFORMANCE_LOG.getAsBoolean()) {
+                VeinMinerPlus.LOGGER.info("[VMP FastMine] stage=drop_settlement player={} dimension={} broken={} elapsedMs={}",
+                        player.getUUID(), level.dimension().location(), brokenBlocks,
+                        Math.round(elapsedNanos / 10_000.0D) / 100.0D);
+                PerformanceFileLog.write("event=fast_mine_settlement player=" + player.getUUID()
+                        + " dimension=" + level.dimension().location() + " broken=" + brokenBlocks
+                        + " totalMs=" + nanosToMillis(elapsedNanos)
+                        + " aggregateMs=" + nanosToMillis(drops.aggregateNanos)
+                        + " aeMs=" + nanosToMillis(drops.aeNanos)
+                        + " experienceMs=" + nanosToMillis(drops.experienceNanos)
+                        + " fallbackMs=" + nanosToMillis(drops.fallbackNanos)
+                        + " groundMs=" + nanosToMillis(drops.groundNanos)
+                        + " itemKeys=" + drops.lastItemKeys
+                        + " totalItems=" + drops.lastTotalItems
+                        + " inserted=" + drops.lastInserted
+                        + " dropped=" + drops.lastDropped
+                        + " pending=" + drops.lastPending);
+            }
+            return new FastMineSettlement(drops.lastTotalItems, drops.lastInserted, drops.lastDropped,
+                    drops.lastPending, drops.lastAeInserted, drops.lastFallbackInserted);
+        }
+
+        /**
+         * Settles buffered drops after the player has disconnected. Storage integrations need
+         * a live player, so the only safe destination here is the recorded world position.
+         */
+        FastMineSettlement finishWithoutPlayer(ServerLevel level, double x, double y, double z,
+                int brokenBlocks) {
+            drops.flushToWorld(level, x, y, z);
+            return new FastMineSettlement(drops.lastTotalItems, drops.lastInserted, drops.lastDropped,
+                    drops.lastPending, drops.lastAeInserted, drops.lastFallbackInserted);
+        }
+    }
+
+    record FastMineSettlement(long totalItems, long inserted, long dropped, long pending,
+            boolean aeInserted, boolean fallbackInserted) {
+        String destinationKey() {
+            if (aeInserted && fallbackInserted) return "message.veinminerplus.fast_mine.destination.ae_and_container";
+            if (aeInserted) return "message.veinminerplus.fast_mine.destination.ae";
+            if (fallbackInserted) return "message.veinminerplus.fast_mine.destination.container";
+            if (pending > 0) return "message.veinminerplus.fast_mine.destination.pending";
+            if (dropped > 0) return "message.veinminerplus.fast_mine.destination.ground";
+            return "message.veinminerplus.fast_mine.destination.none";
+        }
     }
 
     // Allthemodium registers its ore and ancient stone sets with a negative destroy
@@ -462,18 +694,35 @@ public final class ChainEvents {
     // Mirrors ServerPlayerGameMode.destroyBlock aside from the BreakEvent.
     private static boolean breakWithoutBreakEvent(ServerLevel level, ServerPlayer player, BlockPos pos,
             BlockState state) {
+        return breakWithoutBreakEvent(level, player, pos, state, false, true);
+    }
+
+    private static boolean breakWithoutBreakEvent(ServerLevel level, ServerPlayer player, BlockPos pos,
+            BlockState state, boolean bypassReachDistance) {
+        return breakWithoutBreakEvent(level, player, pos, state, bypassReachDistance, true);
+    }
+
+    private static boolean breakWithoutBreakEvent(ServerLevel level, ServerPlayer player, BlockPos pos,
+            BlockState state, boolean bypassReachDistance, boolean damageTool) {
+        return breakWithoutBreakEvent(level, player, pos, state, bypassReachDistance, damageTool, null);
+    }
+
+    private static boolean breakWithoutBreakEvent(ServerLevel level, ServerPlayer player, BlockPos pos,
+            BlockState state, boolean bypassReachDistance, boolean damageTool, ItemStack toolOverride) {
         Block block = state.getBlock();
         if (block instanceof GameMasterBlock && !player.canUseGameMasterBlocks()) {
             level.sendBlockUpdated(pos, state, state, 3);
             return false;
         }
         GameType gameType = player.isCreative() ? GameType.CREATIVE : GameType.SURVIVAL;
-        if (player.blockActionRestricted(level, pos, gameType)) {
+        if (!bypassReachDistance && player.blockActionRestricted(level, pos, gameType)) {
             return false;
         }
 
-        BlockEntity blockEntity = level.getBlockEntity(pos);
-        ItemStack tool = player.getMainHandItem();
+        // Most fast-mine targets are ordinary blocks. Avoid a block-entity lookup
+        // for those while retaining the full block-entity drop path where needed.
+        BlockEntity blockEntity = state.hasBlockEntity() ? level.getBlockEntity(pos) : null;
+        ItemStack tool = toolOverride == null ? player.getMainHandItem() : toolOverride;
         BlockState remaining = block.playerWillDestroy(level, pos, state, player);
         if (!level.removeBlock(pos, false)) {
             return false;
@@ -482,7 +731,7 @@ public final class ChainEvents {
         if (!player.isCreative()) {
             // isEligible already required a successful harvest check, so drops apply.
             block.playerDestroy(level, player, pos, remaining, blockEntity, tool);
-            if (state.getDestroySpeed(level, pos) != 0.0F) {
+            if (damageTool && state.getDestroySpeed(level, pos) != 0.0F) {
                 tool.mineBlock(level, remaining, pos, player);
             }
         }
@@ -601,6 +850,10 @@ public final class ChainEvents {
         PERFORMANCE_LOG.recordAeFlush(elapsedNanos, itemKeys);
     }
 
+    private static double nanosToMillis(long nanos) {
+        return Math.round(nanos / 10_000.0D) / 100.0D;
+    }
+
     private static void showTpsMessage(ServerPlayer player, String translationKey, double tps) {
         player.displayClientMessage(Component.translatable(translationKey, roundedTps(tps)), true);
     }
@@ -608,8 +861,20 @@ public final class ChainEvents {
     private static final class DropBuffer {
         private final ItemStackAccumulator items = new ItemStackAccumulator();
         private final NetworkTarget networkTarget;
-        private int experience;
+        private long experience;
         private boolean flushed;
+        private long lastTotalItems;
+        private long lastInserted;
+        private long lastDropped;
+        private long lastPending;
+        private boolean lastAeInserted;
+        private boolean lastFallbackInserted;
+        private long aggregateNanos;
+        private long aeNanos;
+        private long experienceNanos;
+        private long fallbackNanos;
+        private long groundNanos;
+        private int lastItemKeys;
 
         private DropBuffer(NetworkTarget networkTarget) {
             this.networkTarget = networkTarget;
@@ -619,11 +884,29 @@ public final class ChainEvents {
             items.add(stack);
         }
 
+        private void add(ItemStack stack, long multiplier) {
+            items.add(stack, multiplier);
+        }
+
         private void addExperience(int amount) {
-            experience += amount;
+            if (amount > 0) {
+                experience = Math.min(Long.MAX_VALUE - amount, experience) + amount;
+            }
+        }
+
+        private void merge(DropBuffer other) {
+            // Merge the indexed accumulators directly. Materialising a temporary list
+            // for every broken block dominates allocation cost on large selections.
+            items.addAll(other.items);
+            experience = Math.min(Long.MAX_VALUE - other.experience, experience) + other.experience;
         }
 
         private void flush(ServerLevel level, ServerPlayer player, int brokenBlocks) {
+            flush(level, player, brokenBlocks, false);
+        }
+
+        private void flush(ServerLevel level, ServerPlayer player, int brokenBlocks,
+                boolean grantExperienceDirectly) {
             // A job can be finished by more than one safety/cleanup path in the same
             // tick. Drops and the AE report must be settled exactly once.
             if (flushed) {
@@ -635,7 +918,10 @@ public final class ChainEvents {
                 return;
             }
 
+            long aggregateStarted = System.nanoTime();
             List<ItemStack> aggregated = items.toAggregatedStacks();
+            aggregateNanos += System.nanoTime() - aggregateStarted;
+            lastItemKeys = aggregated.size();
             long totalItems = items.totalCount();
             long inserted = 0;
             List<ItemStack> remaining = aggregated;
@@ -645,10 +931,13 @@ public final class ChainEvents {
                 try {
                     result = DropStorage.store(level.getServer(), player, networkTarget, aggregated);
                 } finally {
-                    recordAeFlush(System.nanoTime() - aeStartedNanos, aggregated.size());
+                    long elapsed = System.nanoTime() - aeStartedNanos;
+                    aeNanos += elapsed;
+                    recordAeFlush(elapsed, aggregated.size());
                 }
                 inserted = result.inserted();
                 remaining = result.remaining();
+                lastAeInserted = result.inserted() > 0;
             }
 
             // Experience is never sent to AE and is settled immediately. Use the
@@ -658,10 +947,43 @@ public final class ChainEvents {
             double y = player.getY();
             double z = player.getZ();
             if (experience > 0) {
-                ExperienceOrb.award(settlementLevel, player.position(), experience);
+                long experienceStarted = System.nanoTime();
+                if (grantExperienceDirectly) {
+                    long remainingExperience = experience;
+                    while (remainingExperience > 0L) {
+                        int points = (int) Math.min(Integer.MAX_VALUE, remainingExperience);
+                        player.giveExperiencePoints(points);
+                        remainingExperience -= points;
+                    }
+                } else {
+                    ExperienceOrb.award(settlementLevel, player.position(),
+                            (int) Math.min(Integer.MAX_VALUE, experience));
+                }
+                experienceNanos += System.nanoTime() - experienceStarted;
+            }
+
+            if (!remaining.isEmpty()) {
+                // AE can be temporarily unavailable or full. Continue through the configured
+                // player containers before queueing a retry, so no drop is stranded in memory.
+                long fallbackStarted = System.nanoTime();
+                StorageBindings bindings = StorageBindings.findIn(player);
+                List<StorageRouter.Sink> fallbackSinks = StorageRouter.resolveFallback(level.getServer(), player,
+                        bindings == null ? StorageBindings.EMPTY : bindings);
+                long beforeFallback = ItemStackAccumulator.count(remaining);
+                for (ItemStack stack : remaining) {
+                    StorageRouter.insert(fallbackSinks, stack);
+                }
+                fallbackNanos += System.nanoTime() - fallbackStarted;
+                long fallbackInserted = beforeFallback - ItemStackAccumulator.count(remaining);
+                inserted += fallbackInserted;
+                lastFallbackInserted = fallbackInserted > 0;
             }
 
             if (result != null && result.retryable() && !remaining.isEmpty()) {
+                lastTotalItems = totalItems;
+                lastInserted = inserted;
+                lastPending = ItemStackAccumulator.count(remaining);
+                lastDropped = 0L;
                 if (DropReturnGuardian.enqueue(player, networkTarget, remaining, inserted, brokenBlocks,
                         settlementLevel, x, y, z)) {
                     clear();
@@ -669,10 +991,46 @@ public final class ChainEvents {
                 }
             }
 
+            lastTotalItems = totalItems;
+            lastInserted = inserted;
+            lastDropped = ItemStackAccumulator.count(remaining);
+            lastPending = 0L;
+            long groundStarted = System.nanoTime();
             DropReturnGuardian.dropImmediately(settlementLevel, x, y, z, remaining);
+            groundNanos += System.nanoTime() - groundStarted;
             if (Config.STORE_DROPS_IN_AE.getAsBoolean() && networkTarget != null && totalItems > 0) {
                 DropReturnGuardian.sendResult(player, brokenBlocks, inserted, ItemStackAccumulator.count(remaining));
             }
+            clear();
+        }
+
+        private void flushToWorld(ServerLevel level, double x, double y, double z) {
+            if (flushed) {
+                return;
+            }
+            flushed = true;
+            if (!level.getGameRules().getBoolean(GameRules.RULE_DOBLOCKDROPS)) {
+                clear();
+                return;
+            }
+            long aggregateStarted = System.nanoTime();
+            List<ItemStack> aggregated = items.toAggregatedStacks();
+            aggregateNanos += System.nanoTime() - aggregateStarted;
+            lastItemKeys = aggregated.size();
+            lastTotalItems = items.totalCount();
+            lastInserted = 0L;
+            lastPending = 0L;
+            lastDropped = ItemStackAccumulator.count(aggregated);
+            if (experience > 0) {
+                // A disconnected player cannot receive points directly. Keep this fallback
+                // to a single bounded orb so cleanup never creates an unbounded entity burst.
+                ExperienceOrb orb = new ExperienceOrb(level, x, y, z,
+                        (int) Math.min(Integer.MAX_VALUE, experience));
+                level.addFreshEntity(orb);
+            }
+            long groundStarted = System.nanoTime();
+            DropReturnGuardian.dropImmediately(level, x, y, z, aggregated);
+            groundNanos += System.nanoTime() - groundStarted;
             clear();
         }
 
@@ -765,8 +1123,8 @@ public final class ChainEvents {
             budget.deadlineBlocked = false;
             sectionBudgetBlocked = false;
             TickStopReason reason = TickStopReason.ERROR;
-            CaptureContext previous = CAPTURING_DROPS.get();
-            CAPTURING_DROPS.set(captureContext);
+            CaptureContext previous = activeDropCapture;
+            activeDropCapture = captureContext;
             try {
                 if (progressCooldown > 0) {
                     progressCooldown--;
@@ -798,9 +1156,9 @@ public final class ChainEvents {
                 PERFORMANCE_LOG.recordSlice(reason, breakCostEwmaNanos);
                 captureContext.clearPosition();
                 if (previous == null) {
-                    CAPTURING_DROPS.remove();
+                    activeDropCapture = null;
                 } else {
-                    CAPTURING_DROPS.set(previous);
+                    activeDropCapture = previous;
                 }
             }
         }
@@ -1423,6 +1781,7 @@ public final class ChainEvents {
         private final DropBuffer drops;
         private final BlockPos.MutableBlockPos origin = new BlockPos.MutableBlockPos();
         private boolean doublePlant;
+        private long itemMultiplier = 1L;
         private boolean hasPosition;
 
         private CaptureContext(DropBuffer drops) {
@@ -1430,8 +1789,13 @@ public final class ChainEvents {
         }
 
         private void begin(BlockPos pos, boolean doublePlant) {
+            begin(pos, doublePlant, 1L);
+        }
+
+        private void begin(BlockPos pos, boolean doublePlant, long itemMultiplier) {
             origin.set(pos);
             this.doublePlant = doublePlant;
+            this.itemMultiplier = Math.max(1L, itemMultiplier);
             hasPosition = true;
         }
 
@@ -1441,6 +1805,10 @@ public final class ChainEvents {
 
         private DropBuffer drops() {
             return drops;
+        }
+
+        private long itemMultiplier() {
+            return itemMultiplier;
         }
 
         private BlockPos origin() {
@@ -1572,6 +1940,12 @@ public final class ChainEvents {
                     rounded(slices == 0 ? 0 : breakEwmaNanos / 1_000.0D / slices), aeFlushes,
                     rounded(aeFlushes == 0 ? 0 : aeFlushNanos / 1_000_000.0D / aeFlushes),
                     rounded(maxAeFlushNanos / 1_000_000.0D), aeItemKeys, reasons);
+            PerformanceFileLog.write("event=chain_performance activeTicks=" + ticks + " jobSlices=" + slices
+                    + " skippedJobs=" + skippedJobs + " breaks=" + breaks + " searches=" + searches
+                    + " sparseSections=" + sparseSections + " indexedSections=" + indexedSections
+                    + " avgJobMs=" + rounded(elapsedNanos / 1_000_000.0D / tickDivisor)
+                    + " maxJobMs=" + rounded(maxElapsedNanos / 1_000_000.0D)
+                    + " aeFlushes=" + aeFlushes + " aeItemKeys=" + aeItemKeys + " stops=" + reasons);
             reset();
         }
 
