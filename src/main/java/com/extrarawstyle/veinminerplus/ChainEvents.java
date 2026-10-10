@@ -16,6 +16,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -35,6 +38,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.HoeItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
@@ -169,7 +173,7 @@ public final class ChainEvents {
         }
 
         ChainMode mode = PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL);
-        if (mode.isInteraction() || !isEligible(level, player, target, state, state.getBlock(), mode)) {
+        if (mode.isInteraction() || !isEligible(level, player, target, state, state.getBlock(), mode, null)) {
             return;
         }
 
@@ -419,7 +423,7 @@ public final class ChainEvents {
     }
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
-            Block targetBlock, ChainMode mode) {
+            Block targetBlock, ChainMode mode, HarvestCache harvestCache) {
         if (state.isAir() || !level.mayInteract(player, pos)
                 || !isAllthemodiumBlock(state) && state.getDestroySpeed(level, pos) < 0.0F) {
             return false;
@@ -427,12 +431,43 @@ public final class ChainEvents {
 
         boolean matches = switch (mode) {
             case BLAST_ANY -> true;
-            case BLAST_ORES -> isOre(state);
+            case BLAST_ORES, EXTREME_BLAST_ORES -> isOre(state);
             case BLAST_LOGS -> state.is(BlockTags.LOGS);
             default -> state.getBlock() == targetBlock;
         };
-        return matches
-                && (player.isCreative() || EventHooks.doPlayerHarvestCheck(player, state, level, pos));
+        if (!matches) {
+            return false;
+        }
+        if (player.isCreative()) {
+            return true;
+        }
+        return harvestCache != null
+                ? harvestCache.canHarvest(player, level, pos, state)
+                : EventHooks.doPlayerHarvestCheck(player, state, level, pos);
+    }
+
+    // The harvest check fires an event for every call, and a chain runs it on every candidate
+    // block. Within one chain the held tool and the block state decide the answer, so each state
+    // is asked once; the held item is compared on every lookup, so a tool that breaks mid-chain
+    // starts a fresh round of checks.
+    private static final class HarvestCache {
+        private final Map<BlockState, Boolean> results = new HashMap<>();
+        private Item tool;
+
+        private boolean canHarvest(ServerPlayer player, ServerLevel level, BlockPos pos, BlockState state) {
+            Item held = player.getMainHandItem().getItem();
+            if (held != tool) {
+                results.clear();
+                tool = held;
+            }
+            Boolean cached = results.get(state);
+            if (cached != null) {
+                return cached;
+            }
+            boolean result = EventHooks.doPlayerHarvestCheck(player, state, level, pos);
+            results.put(state, result);
+            return result;
+        }
     }
 
     // A blast search tests the same handful of blocks over and over, and the ore tags of a
@@ -473,26 +508,19 @@ public final class ChainEvents {
         // Use the same server-side entry point as a real player break. This keeps
         // BlockEvent, drops, tool damage, block entities, and client updates in sync.
         ChainJob job = ACTIVE_JOBS.get(player.getUUID());
-        CaptureContext previous = CAPTURING_DROPS.get();
         if (job != null) {
-            CAPTURING_DROPS.set(new CaptureContext(job.drops, pos.immutable(), state.getBlock() instanceof DoublePlantBlock));
+            // The context stays set for the rest of the chain and is removed when the job ends.
+            // Every break re-points it at its own block first, so interleaved jobs stay correct.
+            CAPTURING_DROPS.set(job.captureAt(pos, state));
         }
-        try {
-            float exhaustion = player.getFoodData().getExhaustionLevel();
-            boolean destroyed = isJustDireThingsTool(player)
-                    ? breakWithoutBreakEvent(level, player, pos, state)
-                    : player.gameMode.destroyBlock(pos);
-            if (destroyed && Config.NO_HUNGER_COST.get()) {
-                player.getFoodData().setExhaustion(exhaustion);
-            }
-            return destroyed;
-        } finally {
-            if (previous == null) {
-                CAPTURING_DROPS.remove();
-            } else {
-                CAPTURING_DROPS.set(previous);
-            }
+        float exhaustion = player.getFoodData().getExhaustionLevel();
+        boolean destroyed = isJustDireThingsTool(player)
+                ? breakWithoutBreakEvent(level, player, pos, state)
+                : player.gameMode.destroyBlock(pos);
+        if (destroyed && Config.NO_HUNGER_COST.get()) {
+            player.getFoodData().setExhaustion(exhaustion);
         }
+        return destroyed;
     }
 
     // Just Dire Things listens to BlockEvent.BreakEvent, runs its own hammer area
@@ -687,8 +715,10 @@ public final class ChainEvents {
             private final int hash;
 
             private StackKey(ItemStack stack) {
-                this.template = stack.copyWithCount(1);
-                this.hash = ItemStack.hashItemAndComponents(this.template);
+                // Only the item and its components identify the bucket; the count is what the
+                // bucket accumulates, and flush() sets its own count on every copy it makes.
+                this.template = stack;
+                this.hash = ItemStack.hashItemAndComponents(stack);
             }
 
             @Override
@@ -824,13 +854,17 @@ public final class ChainEvents {
         // Chunk key -> section y -> matching positions inside that 16x16x16 section.
         // Bucketing matters: a chunk column holds up to 24 sections, while a scan sphere
         // only ever reaches a couple of them.
-        private final Map<Long, Map<Integer, List<BlockPos>>> sparseChunkMatches = new HashMap<>();
-        private final Map<Long, LevelChunk> loadedChunks = new HashMap<>();
+        // Long-keyed maps stay primitive here; boxed Long keys collided into the same few
+        // HashMap buckets near the origin and treeified.
+        private final Long2ObjectMap<Map<Integer, List<BlockPos>>> sparseChunkMatches = new Long2ObjectOpenHashMap<>();
+        private final Long2ObjectMap<LevelChunk> loadedChunks = new Long2ObjectOpenHashMap<>();
         private final List<BlockPos> graphOffsets;
         private final int totalLimit;
         private final int areaDepthLimit;
         private final boolean sparseBlast;
         private final DropBuffer drops;
+        private final CaptureContext capture;
+        private final HarvestCache harvestCache = new HarvestCache();
         private int brokenCount = 1;
         private int areaDepth;
         private int areaIndex;
@@ -846,13 +880,17 @@ public final class ChainEvents {
             this.face = face;
             this.mode = mode;
             this.drops = drops;
+            this.capture = new CaptureContext(drops);
             this.totalLimit = mode.isBlast() ? Config.MAX_BLAST_BLOCKS.getAsInt() : Config.MAX_NORMAL_BLOCKS.getAsInt();
             this.areaDepthLimit = Config.MAX_NORMAL_BLOCKS.getAsInt();
             this.graphOffsets = mode.isBlast()
                     ? BLAST_OFFSETS.computeIfAbsent(Config.BLAST_SEARCH_DISTANCE.getAsInt(), ChainEvents::createBlastOffsets)
                     : NORMAL_OFFSETS;
             BlockState targetState = targetBlock.defaultBlockState();
-            this.sparseBlast = mode == ChainMode.BLAST_ORES
+            // An extreme blast always scans by chunk: one palette pass beats the graph's
+            // per-node offset walks for every block type, not just the scattered veins.
+            this.sparseBlast = mode.isExtremeBlast()
+                    || mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
                     || mode == ChainMode.BLAST_SAME && (isOre(targetState) || targetState.is(BlockTags.LOGS));
             this.sparseTargets = new PriorityQueue<>(Comparator
@@ -930,7 +968,7 @@ public final class ChainEvents {
                     }
 
                     BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                    if (isEligible(level, player, candidate, state, targetBlock, mode)
+                    if (isEligible(level, player, candidate, state, targetBlock, mode, harvestCache)
                             && breakOne(level, player, candidate, state)) {
                         brokenCount++;
                         breaks++;
@@ -974,7 +1012,7 @@ public final class ChainEvents {
                 }
 
                 BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                if (isEligible(level, player, candidate, state, targetBlock, mode)
+                if (isEligible(level, player, candidate, state, targetBlock, mode, harvestCache)
                         && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
@@ -991,14 +1029,17 @@ public final class ChainEvents {
         }
 
         private void tickSparseBlast() {
+            boolean extreme = mode.isExtremeBlast();
             int breaks = 0;
             int scannedCenters = 0;
-            int breakLimit = effectiveBlastBreakLimit();
+            // An extreme blast is deliberately unthrottled: the whole chain finishes inside this tick.
+            int breakLimit = extreme ? Integer.MAX_VALUE : effectiveBlastBreakLimit();
             // While targets are queued no scanning happens, so a finished vein can leave a
             // large backlog of centres behind and every one of them would be walked in a
             // single tick. Capping the number walked per tick bounds that worst case; the
             // remainder is simply handled on the following ticks.
-            int centerLimit = Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
+            int centerLimit = extreme ? Integer.MAX_VALUE
+                    : Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
             while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUUID())) {
                 while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
                     scanSparseCenter(sparseCenters.removeFirst());
@@ -1010,7 +1051,7 @@ public final class ChainEvents {
 
                 BlockPos candidate = sparseTargets.poll();
                 BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                if (isEligible(level, player, candidate, state, targetBlock, mode)
+                if (isEligible(level, player, candidate, state, targetBlock, mode, harvestCache)
                         && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
@@ -1029,7 +1070,8 @@ public final class ChainEvents {
         }
 
         private boolean updateTpsSafety() {
-            if (!mode.isBlast()) {
+            // The extreme blasts deliberately run without the TPS guard.
+            if (!mode.isBlast() || mode.isExtremeBlast()) {
                 return true;
             }
 
@@ -1139,26 +1181,36 @@ public final class ChainEvents {
         }
 
         private boolean matchesSparseState(BlockState state) {
-            return switch (mode) {
-                case BLAST_ORES -> isOre(state);
-                case BLAST_LOGS -> state.is(BlockTags.LOGS);
-                default -> state.is(targetBlock);
-            };
+        return switch (mode) {
+            case BLAST_ORES, EXTREME_BLAST_ORES -> isOre(state);
+            case BLAST_LOGS -> state.is(BlockTags.LOGS);
+            default -> state.is(targetBlock);
+        };
+        }
+
+        private CaptureContext captureAt(BlockPos pos, BlockState state) {
+            capture.set(pos.immutable(), state.getBlock() instanceof DoublePlantBlock);
+            return capture;
         }
 
         private void finish() {
             drops.flush(player.serverLevel(), player);
+            CAPTURING_DROPS.remove();
             ACTIVE_JOBS.remove(player.getUUID(), this);
         }
 
     }
 
     private static BlockState getBlockStateForSearch(ServerLevel level, BlockPos pos,
-            Map<Long, LevelChunk> loadedChunks) {
+            Long2ObjectMap<LevelChunk> loadedChunks) {
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
-        LevelChunk chunk = loadedChunks.computeIfAbsent(chunkKey(chunkX, chunkZ),
-                key -> level.getChunk(chunkX, chunkZ));
+        long key = chunkKey(chunkX, chunkZ);
+        LevelChunk chunk = loadedChunks.get(key);
+        if (chunk == null) {
+            chunk = level.getChunk(chunkX, chunkZ);
+            loadedChunks.put(key, chunk);
+        }
         return chunk.getBlockState(pos);
     }
 
@@ -1202,6 +1254,31 @@ public final class ChainEvents {
     private record BreakFace(BlockPos pos, Direction face) {
     }
 
-    private record CaptureContext(DropBuffer drops, BlockPos origin, boolean doublePlant) {
+    // Mutable and reused: a chain owns one instance and points it at the block being broken now.
+    private static final class CaptureContext {
+        private final DropBuffer drops;
+        private BlockPos origin;
+        private boolean doublePlant;
+
+        private CaptureContext(DropBuffer drops) {
+            this.drops = drops;
+        }
+
+        private void set(BlockPos origin, boolean doublePlant) {
+            this.origin = origin;
+            this.doublePlant = doublePlant;
+        }
+
+        private DropBuffer drops() {
+            return drops;
+        }
+
+        private BlockPos origin() {
+            return origin;
+        }
+
+        private boolean doublePlant() {
+            return doublePlant;
+        }
     }
 }

@@ -8,6 +8,8 @@ public enum ChainMode {
     BLAST_ORES("chain.veinminerplus.blast_ores"),
     BLAST_ANY("chain.veinminerplus.blast_any"),
     BLAST_LOGS("chain.veinminerplus.blast_logs"),
+    EXTREME_BLAST_SAME("chain.veinminerplus.extreme_blast_same"),
+    EXTREME_BLAST_ORES("chain.veinminerplus.extreme_blast_ores"),
     SPECIAL_INTERACT("chain.veinminerplus.special_interact");
 
     private final String translationKey;
@@ -35,7 +37,14 @@ public enum ChainMode {
     }
 
     public boolean isBlast() {
-        return this == BLAST_SAME || this == BLAST_ORES || this == BLAST_ANY || this == BLAST_LOGS;
+        return this == BLAST_SAME || this == BLAST_ORES || this == BLAST_ANY || this == BLAST_LOGS
+                || isExtremeBlast();
+    }
+
+    // The extreme blasts trade server health for raw speed on purpose: they run without any
+    // per-tick budget and without the TPS guard, finishing their whole chain inside one tick.
+    public boolean isExtremeBlast() {
+        return this == EXTREME_BLAST_SAME || this == EXTREME_BLAST_ORES;
     }
 
     // This mode never chains block breaking; it only reacts to right clicks on a mature crop,

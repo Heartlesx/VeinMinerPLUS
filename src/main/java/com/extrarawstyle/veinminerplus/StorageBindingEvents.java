@@ -67,6 +67,10 @@ public final class StorageBindingEvents {
         StorageBindings.write(card, new StorageBindings(type, target));
         Component where = Component.literal(pos.getX() + ", " + pos.getY() + ", " + pos.getZ());
         player.displayClientMessage(Component.translatable("message.veinminerplus.binder." + type, where), true);
+        // A binding does nothing while the config switch is off, and nothing else would say so.
+        if (!Config.STORAGE_BINDING.getAsBoolean()) {
+            player.displayClientMessage(Component.translatable("message.veinminerplus.binder.disabled"), false);
+        }
         event.setCanceled(true);
     }
 

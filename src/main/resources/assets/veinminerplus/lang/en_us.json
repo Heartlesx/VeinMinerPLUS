@@ -8,6 +8,8 @@
   "chain.veinminerplus.blast_ores": "Blast: all ores",
   "chain.veinminerplus.blast_any": "Blast: any harvestable block",
   "chain.veinminerplus.blast_logs": "Blast: logs",
+  "chain.veinminerplus.extreme_blast_same": "Extreme blast: same block",
+  "chain.veinminerplus.extreme_blast_ores": "Extreme blast: all ores",
   "chain.veinminerplus.special_interact": "Special interaction chain",
   "message.veinminerplus.broken": "VeinMiner: %s blocks",
   "veinminerplus.configuration.title": "VeinMinerPlus Server Configuration",
@@ -56,6 +58,7 @@
   "message.veinminerplus.binder.cleared": "Cleared the storage binding",
   "message.veinminerplus.binder.unsupported": "This block cannot be bound",
   "message.veinminerplus.binder.ae2_offline": "That AE2 block is not connected to a network",
+  "message.veinminerplus.binder.disabled": "Note: the \"send chain drops to bound storage\" setting is off, so chain drops will not go in here.",
   "veinminerplus.configuration.storageBinding": "Send chain drops to bound storage",
   "veinminerplus.configuration.storageBinding.value": "Send chain drops to bound storage: %s",
   "veinminerplus.configuration.storageBinding.tooltip": "When enabled, chain mining drops go to the storage bound on the Storage Binding Card; only what it does not accept is dropped on the ground."
