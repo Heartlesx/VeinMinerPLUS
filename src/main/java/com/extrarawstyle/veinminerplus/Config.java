@@ -1,5 +1,8 @@
 package com.extrarawstyle.veinminerplus;
 
+import java.util.List;
+
+import net.minecraft.resources.ResourceLocation;
 import net.neoforged.neoforge.common.ModConfigSpec;
 
 public final class Config {
@@ -39,6 +42,13 @@ public final class Config {
             .comment("启用后，连锁挖掘的掉落物优先送入存储绑定卡绑定的存储，塞不下的才掉在地上；默认开启。")
             .translation("veinminerplus.configuration.storageBinding")
             .define("storageBinding", true);
+
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> BLOCK_BLACKLIST = BUILDER
+            .comment("方块黑名单：列表中的方块不会被连锁/爆破破坏，也不会触发连锁。填写方块 ID，例如 ae2:cable_bus。")
+            .translation("veinminerplus.configuration.blockBlacklist")
+            .defineList("blockBlacklist", List.of(), () -> "",
+                    entry -> entry instanceof String value
+                            && (value.isBlank() || ResourceLocation.tryParse(value.trim()) != null));
 
     static final ModConfigSpec SPEC = BUILDER.build();
 

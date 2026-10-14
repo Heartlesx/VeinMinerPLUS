@@ -35,6 +35,8 @@ import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
+import net.neoforged.neoforge.client.settings.KeyConflictContext;
+import net.neoforged.neoforge.client.settings.KeyModifier;
 
 @Mod(value = VeinMinerPlus.MODID, dist = Dist.CLIENT)
 @EventBusSubscriber(modid = VeinMinerPlus.MODID, value = Dist.CLIENT)
@@ -44,9 +46,37 @@ public final class VeinMinerPlusClient {
             InputConstants.Type.KEYSYM,
             GLFW.GLFW_KEY_GRAVE_ACCENT,
             "key.categories.veinminerplus");
+    private static final KeyMapping BLACKLIST_KEY = new KeyMapping(
+            "key.veinminerplus.blacklist",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_KP_ADD,
+            "key.categories.veinminerplus");
+    // Shift + arrow keys switch modes on their own, without the chain key. Both are
+    // rebindable, and the shift part belongs to the binding instead of a hardcoded check.
+    private static final KeyMapping MODE_UP_KEY = new KeyMapping(
+            "key.veinminerplus.mode_up",
+            KeyConflictContext.IN_GAME,
+            KeyModifier.SHIFT,
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_UP,
+            "key.categories.veinminerplus");
+    private static final KeyMapping MODE_DOWN_KEY = new KeyMapping(
+            "key.veinminerplus.mode_down",
+            KeyConflictContext.IN_GAME,
+            KeyModifier.SHIFT,
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_DOWN,
+            "key.categories.veinminerplus");
+
+    // A held mode key steps every 0.5 s; the OS repeat rate would race through the list.
+    private static final int MODE_REPEAT_TICKS = 10;
+    // The full mode list lingers for 0.5 s after the latest switch.
+    private static final int MODE_MENU_LINGER_TICKS = 10;
 
     private static ChainMode clientMode = ChainMode.NORMAL;
     private static boolean keyStateSent;
+    private static int modeKeyHoldTicks;
+    private static int modeMenuTicks;
 
     public VeinMinerPlusClient(IEventBus modEventBus, ModContainer container) {
         modEventBus.addListener(VeinMinerPlusClient::registerKeyMappings);
@@ -55,11 +85,16 @@ public final class VeinMinerPlusClient {
 
     private static void registerKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(CHAIN_KEY);
+        event.register(BLACKLIST_KEY);
+        event.register(MODE_UP_KEY);
+        event.register(MODE_DOWN_KEY);
     }
 
     @SubscribeEvent
     public static void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
         clientMode = ChainMode.NORMAL;
+        modeKeyHoldTicks = 0;
+        modeMenuTicks = 0;
         NetworkHandler.sendModeChange(clientMode);
     }
 
@@ -67,6 +102,8 @@ public final class VeinMinerPlusClient {
     public static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         clientMode = ChainMode.NORMAL;
         keyStateSent = false;
+        modeKeyHoldTicks = 0;
+        modeMenuTicks = 0;
     }
 
     static void openConfigScreen(NetworkHandler.ConfigSnapshotPayload config) {
@@ -75,6 +112,29 @@ public final class VeinMinerPlusClient {
 
     @SubscribeEvent
     public static void onKey(InputEvent.Key event) {
+        if (BLACKLIST_KEY.matches(event.getKey(), event.getScanCode())) {
+            if (event.getAction() == GLFW.GLFW_PRESS) {
+                toggleBlacklist();
+            }
+            return;
+        }
+
+        // Mode switching reacts to the press only; the held repeat is timed in the client
+        // tick because GLFW repeat events fire at the OS rate.
+        if (event.getAction() == GLFW.GLFW_PRESS && Minecraft.getInstance().player != null) {
+            InputConstants.Key pressed = InputConstants.getKey(event.getKey(), event.getScanCode());
+            if (MODE_UP_KEY.isActiveAndMatches(pressed)) {
+                switchMode(-1);
+                modeKeyHoldTicks = 0;
+                return;
+            }
+            if (MODE_DOWN_KEY.isActiveAndMatches(pressed)) {
+                switchMode(1);
+                modeKeyHoldTicks = 0;
+                return;
+            }
+        }
+
         if (!CHAIN_KEY.matches(event.getKey(), event.getScanCode())) {
             return;
         }
@@ -85,6 +145,22 @@ public final class VeinMinerPlusClient {
         }
         if (event.getAction() == GLFW.GLFW_PRESS) {
             syncKeyState();
+        }
+    }
+
+    // Sneak + blacklist key toggles the aimed block in the shared blacklist. The server
+    // revalidates permission, the sneak posture and the distance before it changes anything.
+    private static void toggleBlacklist() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.screen != null || !minecraft.player.isShiftKeyDown()) {
+            return;
+        }
+
+        if (minecraft.hitResult instanceof BlockHitResult hit) {
+            NetworkHandler.sendBlacklistToggle(hit.getBlockPos());
+        } else {
+            minecraft.player.displayClientMessage(
+                    Component.translatable("message.veinminerplus.blacklist.no_target"), true);
         }
     }
 
@@ -103,15 +179,19 @@ public final class VeinMinerPlusClient {
     @SubscribeEvent
     public static void onRenderGui(RenderGuiEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (!isChainKeyActive(minecraft)) {
+        GuiGraphics graphics = event.getGuiGraphics();
+
+        if (isChainKeyActive(minecraft)) {
+            if (Screen.hasShiftDown()) {
+                renderAllModes(graphics, minecraft);
+            } else {
+                renderCurrentMode(graphics, minecraft);
+            }
             return;
         }
 
-        GuiGraphics graphics = event.getGuiGraphics();
-        if (Screen.hasShiftDown()) {
+        if (modeMenuTicks > 0 && minecraft.player != null && minecraft.screen == null) {
             renderAllModes(graphics, minecraft);
-        } else {
-            renderCurrentMode(graphics, minecraft);
         }
     }
 
@@ -152,6 +232,46 @@ public final class VeinMinerPlusClient {
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         syncKeyState();
+        tickModeKeys();
+    }
+
+    private static void tickModeKeys() {
+        if (modeMenuTicks > 0) {
+            modeMenuTicks--;
+        }
+
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.screen != null) {
+            modeKeyHoldTicks = 0;
+            return;
+        }
+
+        int direction = 0;
+        if (MODE_UP_KEY.isDown()) {
+            direction--;
+        }
+        if (MODE_DOWN_KEY.isDown()) {
+            direction++;
+        }
+
+        if (direction == 0) {
+            modeKeyHoldTicks = 0;
+            return;
+        }
+
+        modeKeyHoldTicks++;
+        if (modeKeyHoldTicks >= MODE_REPEAT_TICKS) {
+            modeKeyHoldTicks = 0;
+            switchMode(direction);
+        }
+    }
+
+    // The key path shows the full list for a moment after each switch; the wheel path
+    // keeps its own selector, which stays open while the chain key and shift are held.
+    private static void switchMode(int direction) {
+        clientMode = ChainMode.cycle(clientMode, direction);
+        NetworkHandler.sendModeChange(clientMode);
+        modeMenuTicks = MODE_MENU_LINGER_TICKS;
     }
 
     private static void syncKeyState() {

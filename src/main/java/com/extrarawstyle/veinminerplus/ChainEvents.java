@@ -35,7 +35,6 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.Item;
@@ -58,6 +57,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.common.ItemAbilities;
 import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.neoforge.event.TagsUpdatedEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
@@ -110,6 +110,13 @@ public final class ChainEvents {
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
     private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
+
+    @SubscribeEvent
+    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            NetworkHandler.sendBlacklistSync(player);
+        }
+    }
 
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
@@ -275,9 +282,11 @@ public final class ChainEvents {
     static boolean collectInteractTargets(Level level, BlockPos origin, ItemStack stack, int limit,
             List<BlockPos> targets) {
         BlockState originState = level.getBlockState(origin);
-        if (isHarvestable(originState)) {
-            spreadSquare(level, origin, limit, targets,
-                    pos -> isHarvestable(level.getBlockState(pos)));
+        if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
+            spreadSquare(level, origin, limit, targets, pos -> {
+                BlockState state = level.getBlockState(pos);
+                return isHarvestable(state) && !BlockBlacklist.contains(state);
+            });
             return true;
         }
         if (stack.getItem() instanceof HoeItem) {
@@ -306,7 +315,9 @@ public final class ChainEvents {
         if (stack.isEmpty() || stack.getItem() instanceof BlockItem) {
             return false;
         }
-        if (stack.getItem() instanceof AxeItem) {
+        // The NeoForge ability, not `instanceof AxeItem`: multi-tools such as Mekanism's
+        // paxel strip logs without extending AxeItem.
+        if (stack.canPerformAction(ItemAbilities.AXE_STRIP)) {
             return state.is(BlockTags.LOGS);
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
@@ -424,7 +435,7 @@ public final class ChainEvents {
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode, HarvestCache harvestCache) {
-        if (state.isAir() || !level.mayInteract(player, pos)
+        if (BlockBlacklist.contains(state) || state.isAir() || !level.mayInteract(player, pos)
                 || !isAllthemodiumBlock(state) && state.getDestroySpeed(level, pos) < 0.0F) {
             return false;
         }
@@ -741,7 +752,7 @@ public final class ChainEvents {
     private static boolean interactOne(ServerLevel level, ServerPlayer player, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         if (isHarvestable(state)) {
-            return harvestOne(level, player, pos, state);
+            return !BlockBlacklist.contains(state) && harvestOne(level, player, pos, state);
         }
 
         ItemStack stack = player.getMainHandItem();
@@ -1140,7 +1151,13 @@ public final class ChainEvents {
                     if (sections == null) {
                         LevelChunk chunk = loadedChunks.get(key);
                         if (chunk == null) {
-                            chunk = level.getChunk(chunkX, chunkZ);
+                            // Resident chunks only: a blocking getChunk generates terrain inside
+                            // this tick, and against ungenerated ground the closure keeps finding
+                            // new ore in what it just generated - one tick that never ends.
+                            chunk = level.getChunkSource().getChunkNow(chunkX, chunkZ);
+                            if (chunk == null) {
+                                continue;
+                            }
                             loadedChunks.put(key, chunk);
                         }
 
@@ -1181,6 +1198,9 @@ public final class ChainEvents {
         }
 
         private boolean matchesSparseState(BlockState state) {
+        if (BlockBlacklist.contains(state)) {
+            return false;
+        }
         return switch (mode) {
             case BLAST_ORES, EXTREME_BLAST_ORES -> isOre(state);
             case BLAST_LOGS -> state.is(BlockTags.LOGS);
