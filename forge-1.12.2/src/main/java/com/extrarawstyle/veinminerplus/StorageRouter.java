@@ -16,7 +16,8 @@ import net.minecraftforge.items.ItemHandlerHelper;
 // Turns the binding of a card into the sink that takes the drops. The target is resolved once per flush
 // and then reused for every stack, so a flush with many stacks does not repeat the lookups.
 final class StorageRouter {
-    private static final String AE2_MOD_ID = "ae2";
+    // 1.12.2 keeps the old mod id; "ae2" is only the id from 1.16 on.
+    private static final String AE2_MOD_ID = "appliedenergistics2";
 
     @CapabilityInject(IItemHandler.class)
     private static Capability<IItemHandler> itemHandler = null;

@@ -28,6 +28,7 @@ public final class NetworkHandler {
         channel.registerMessage(ConfigRequestHandler.class, ConfigRequestMessage.class, packetId++, Side.SERVER);
         channel.registerMessage(ConfigSnapshotHandler.class, ConfigSnapshotMessage.class, packetId++, Side.CLIENT);
         channel.registerMessage(ConfigUpdateHandler.class, ConfigUpdateMessage.class, packetId++, Side.SERVER);
+        channel.registerMessage(ProgressHandler.class, ProgressMessage.class, packetId++, Side.CLIENT);
     }
 
     static void sendKeyState(boolean held) {
@@ -44,6 +45,13 @@ public final class NetworkHandler {
 
     static void openConfigScreen(EntityPlayerMP player) {
         channel.sendTo(ConfigSnapshotMessage.current(), player);
+    }
+
+    // The progress cannot go through the action bar: in a large pack other mods write to the same
+    // overlay while the chain is running, and two writers replacing each other turn the counter
+    // into a flicker. The client draws it on its own HUD instead.
+    static void sendProgress(EntityPlayerMP player, int count, boolean interact) {
+        channel.sendTo(new ProgressMessage(count, interact), player);
     }
 
     static void sendConfigUpdate(int maxNormalBlocks, int maxNormalBlocksPerTick, int maxBlastBlocks,
@@ -228,6 +236,39 @@ public final class NetworkHandler {
         @Override
         public IMessage onMessage(ConfigSnapshotMessage message, MessageContext context) {
             VeinMinerPlusClient.openConfigScreen(message);
+            return null;
+        }
+    }
+
+    public static class ProgressMessage implements IMessage {
+        private int count;
+        private boolean interact;
+
+        public ProgressMessage() {
+        }
+
+        ProgressMessage(int count, boolean interact) {
+            this.count = count;
+            this.interact = interact;
+        }
+
+        @Override
+        public void fromBytes(ByteBuf buffer) {
+            count = buffer.readInt();
+            interact = buffer.readBoolean();
+        }
+
+        @Override
+        public void toBytes(ByteBuf buffer) {
+            buffer.writeInt(count);
+            buffer.writeBoolean(interact);
+        }
+    }
+
+    public static class ProgressHandler implements IMessageHandler<ProgressMessage, IMessage> {
+        @Override
+        public IMessage onMessage(ProgressMessage message, MessageContext context) {
+            VeinMinerPlusClient.onProgress(message.count, message.interact);
             return null;
         }
     }

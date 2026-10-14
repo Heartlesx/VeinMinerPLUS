@@ -13,7 +13,7 @@ import org.apache.logging.log4j.Logger;
 public class VeinMinerPlus {
     public static final String MODID = "veinminerplus";
     public static final String NAME = "VeinMinerPlus";
-    public static final String VERSION = "4.1.5-forge-1.12.2";
+    public static final String VERSION = "4.2.6-dev3-forge-1.12.2";
 
     public static Logger logger;
 

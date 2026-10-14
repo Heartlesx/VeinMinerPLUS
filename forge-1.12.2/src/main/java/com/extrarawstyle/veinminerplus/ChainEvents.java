@@ -20,7 +20,7 @@ import net.minecraft.block.BlockCocoa;
 import net.minecraft.block.BlockCrops;
 import net.minecraft.block.BlockDirt;
 import net.minecraft.block.BlockDoublePlant;
-import net.minecraft.block.BlockFarmland;
+import net.minecraft.block.IGrowable;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.item.EntityXPOrb;
@@ -28,11 +28,13 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.init.Blocks;
 import net.minecraft.init.Items;
+import net.minecraft.item.EnumDyeColor;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemAxe;
 import net.minecraft.item.ItemBlock;
+import net.minecraft.item.ItemDye;
 import net.minecraft.item.ItemHoe;
-import net.minecraft.item.ItemSeeds;
+import net.minecraft.item.ItemSpade;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.tileentity.TileEntity;
@@ -46,6 +48,7 @@ import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraftforge.common.ForgeHooks;
+import net.minecraftforge.common.IPlantable;
 import net.minecraftforge.event.entity.EntityJoinWorldEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.world.BlockEvent;
@@ -354,8 +357,13 @@ public final class ChainEvents {
 
         WorldServer level = (WorldServer) world;
         List<BlockPos> targets = new ArrayList<>();
-        if (!collectInteractTargets(level, event.getPos(), player.getHeldItemMainhand(),
-                INTERACT_BLOCK_LIMIT, targets) || targets.isEmpty()) {
+        boolean handled = collectInteractTargets(level, event.getPos(), player.getHeldItemMainhand(),
+                INTERACT_BLOCK_LIMIT, targets);
+        // TEMPORARY: this mode has no other way to show which gate stopped it. Remove with the rest
+        // of the diagnostics once the interaction mode has been confirmed in game.
+        VeinMinerPlus.debug("interact click at {} item={} handled={} targets={}", event.getPos(),
+                player.getHeldItemMainhand().getItem().getRegistryName(), handled, targets.size());
+        if (!handled || targets.isEmpty()) {
             return;
         }
 
@@ -372,19 +380,33 @@ public final class ChainEvents {
             spreadSquare(level, origin, limit, targets, pos -> isHarvestable(level.getBlockState(pos)));
             return true;
         }
-        if (stack.getItem() instanceof ItemHoe) {
+        Item item = stack.getItem();
+        if (item instanceof ItemHoe) {
             spreadSquare(level, origin, limit, targets, pos -> isTillable(level, pos));
             return true;
         }
-        if (stack.getItem() instanceof ItemSeeds) {
-            spreadSquare(level, origin, limit, targets, pos -> isPlantable(level, pos));
+        // GregTech registers its tools under the vanilla "shovel" tool class instead of extending
+        // ItemSpade, so the class alone would miss them.
+        if (item instanceof ItemSpade || item.getToolClasses(stack).contains("shovel")) {
+            spreadSquare(level, origin, limit, targets, pos -> isPathable(level, pos));
+            return true;
+        }
+        // 1.12.2 splits the seeds over two families that share no superclass: ItemSeeds (wheat,
+        // nether wart) and ItemSeedFood (carrot, potato, beetroot). IPlantable is what both use to
+        // ask a soil whether it accepts them, so the same question is asked here.
+        if (item instanceof IPlantable) {
+            spreadSquare(level, origin, limit, targets, pos -> isPlantable(level, pos, (IPlantable) item));
+            return true;
+        }
+        // The vanilla item grows whatever IGrowable accepts, so the same gate is used here.
+        if (item instanceof ItemDye && EnumDyeColor.byDyeDamage(stack.getMetadata()) == EnumDyeColor.WHITE) {
+            spreadSquare(level, origin, limit, targets, pos -> isFertilizable(level, pos));
             return true;
         }
         // An axe strips logs, so its neighbours of the same kind are collected. Anything the held
         // item does not apply to is skipped by the vanilla gate inside interactOne.
         if (isAppliedToBlock(stack, originState)) {
-            Block originBlock = originState.getBlock();
-            spreadSquare(level, origin, limit, targets, pos -> level.getBlockState(pos).getBlock() == originBlock);
+            spreadSquare(level, origin, limit, targets, pos -> sameKind(originState, level.getBlockState(pos)));
             return true;
         }
         return false;
@@ -428,11 +450,33 @@ public final class ChainEvents {
     // Selection is deliberately a little looser than vanilla: the use is still the final gate when
     // the job runs, so a position vanilla would refuse is simply skipped.
     private static boolean isTillable(World level, BlockPos pos) {
-        return level.getBlockState(pos).getBlock() instanceof BlockDirt && level.isAirBlock(pos.up());
+        // Grass is a block of its own in 1.12.2, not a dirt variant, and vanilla tills grass and
+        // grass path just like dirt. A dirt-only test refuses the very block the player aims at,
+        // which leaves the aimed block tilled by vanilla while the square around it stays untouched.
+        Block block = level.getBlockState(pos).getBlock();
+        return (block instanceof BlockDirt || block == Blocks.GRASS || block == Blocks.GRASS_PATH)
+                && level.isAirBlock(pos.up());
     }
 
-    private static boolean isPlantable(World level, BlockPos pos) {
-        return level.getBlockState(pos).getBlock() instanceof BlockFarmland && level.isAirBlock(pos.up());
+    // The soil is asked exactly the question the vanilla item asks it, so farmland, soul sand and
+    // the soils of other mods are all decided by the block itself instead of by a hardcoded list.
+    private static boolean isPlantable(World level, BlockPos pos, IPlantable plantable) {
+        IBlockState state = level.getBlockState(pos);
+        return level.isAirBlock(pos.up())
+                && state.getBlock().canSustainPlant(state, level, pos, EnumFacing.UP, plantable);
+    }
+
+    // A shovel turns grass into a path and leaves dirt alone, which is what vanilla does with it.
+    private static boolean isPathable(World level, BlockPos pos) {
+        return level.getBlockState(pos).getBlock() == Blocks.GRASS && level.isAirBlock(pos.up());
+    }
+
+    // Bone meal grows whatever the vanilla item would grow, so its own gate is the selector.
+    private static boolean isFertilizable(World level, BlockPos pos) {
+        IBlockState state = level.getBlockState(pos);
+        Block block = state.getBlock();
+        return block instanceof IGrowable
+                && ((IGrowable) block).canUseBonemeal(level, level.rand, pos, state);
     }
 
     static boolean isHarvestable(IBlockState state) {
@@ -787,12 +831,14 @@ public final class ChainEvents {
         return Collections.unmodifiableList(offsets);
     }
 
+    // The counter is sent to the client and drawn on its own HUD. The action bar is shared with
+    // every other mod, and a second writer there makes the counter flicker or vanish entirely.
     private static void showProgress(EntityPlayerMP player, int count) {
-        player.sendStatusMessage(new TextComponentTranslation("message.veinminerplus.progress", count), true);
+        NetworkHandler.sendProgress(player, count, false);
     }
 
     private static void showInteractProgress(EntityPlayerMP player, int count) {
-        player.sendStatusMessage(new TextComponentTranslation("message.veinminerplus.interact_progress", count), true);
+        NetworkHandler.sendProgress(player, count, true);
     }
 
     // 1.12.2 exposes the per-tick timings of the last hundred ticks but no averaged value.

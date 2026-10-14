@@ -3,6 +3,7 @@ package com.extrarawstyle.veinminerplus;
 import java.io.File;
 
 import net.minecraftforge.common.config.Configuration;
+import net.minecraftforge.common.config.Property;
 
 public final class Config {
     private static Configuration config;
@@ -45,8 +46,34 @@ public final class Config {
     }
 
     public static void save() {
-        if (config != null) {
-            config.save();
+        if (config == null) {
+            return;
+        }
+        // The file is written from the Configuration's own properties, not from the statics above,
+        // so the two have to be brought together first. Without this a change made in game is stored
+        // as the value the file was loaded with, and the next launch reads that old value back.
+        setInt("maxNormalBlocks", maxNormalBlocks);
+        setInt("maxNormalBlocksPerTick", maxNormalBlocksPerTick);
+        setInt("maxBlastBlocks", maxBlastBlocks);
+        setInt("maxBlastBlocksPerTick", maxBlastBlocksPerTick);
+        setInt("blastSearchDistance", blastSearchDistance);
+        setBoolean("noHungerCost", noHungerCost);
+        setBoolean("storageBinding", storageBinding);
+        config.save();
+    }
+
+    // Written through the property the file was read with, so the entry keeps its type.
+    private static void setInt(String key, int value) {
+        Property property = config.getCategory("general").get(key);
+        if (property != null) {
+            property.set(value);
+        }
+    }
+
+    private static void setBoolean(String key, boolean value) {
+        Property property = config.getCategory("general").get(key);
+        if (property != null) {
+            property.set(value);
         }
     }
 }

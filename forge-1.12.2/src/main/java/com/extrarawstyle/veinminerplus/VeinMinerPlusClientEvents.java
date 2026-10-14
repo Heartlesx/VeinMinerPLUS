@@ -49,7 +49,7 @@ public final class VeinMinerPlusClientEvents {
 
     @SubscribeEvent
     public static void onRenderOverlay(RenderGameOverlayEvent.Post event) {
-        VeinMinerPlusClient.renderModeMenu(event);
+        VeinMinerPlusClient.renderHud(event);
     }
 
     @SubscribeEvent
@@ -61,6 +61,7 @@ public final class VeinMinerPlusClientEvents {
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
             VeinMinerPlusClient.syncKeyState();
+            VeinMinerPlusClient.tickProgress();
         }
     }
 }

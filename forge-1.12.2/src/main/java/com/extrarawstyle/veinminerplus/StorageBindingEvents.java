@@ -17,8 +17,9 @@ import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 
 public final class StorageBindingEvents {
-    private static final String AE2_MOD_ID = "ae2";
-    private static final String AE2_NAMESPACE = "ae2";
+    // 1.12.2 registers its blocks under the old namespace; "ae2" is only the namespace from 1.16 on.
+    private static final String AE2_MOD_ID = "appliedenergistics2";
+    private static final String AE2_NAMESPACE = "appliedenergistics2";
     // A backpack counts as Sophisticated Storage when it is placed on the ground; a carried one has
     // its own magnet upgrade and is deliberately left alone.
     private static final Set<String> SOPHISTICATED_NAMESPACES = new HashSet<>(Arrays.asList(

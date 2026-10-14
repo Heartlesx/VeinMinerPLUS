@@ -8,6 +8,7 @@ import org.lwjgl.input.Keyboard;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.client.settings.KeyBinding;
@@ -27,8 +28,13 @@ public final class VeinMinerPlusClient {
     static final KeyBinding CHAIN_KEY = new KeyBinding("key.veinminerplus.chain",
             Keyboard.KEY_GRAVE, "key.categories.veinminerplus");
 
+    private static final int PROGRESS_TICKS = 60;
+
     static ChainMode clientMode = ChainMode.NORMAL;
     private static boolean keyStateSent;
+    private static int progressCount;
+    private static boolean progressInteract;
+    private static int progressTicks;
 
     private VeinMinerPlusClient() {
     }
@@ -46,6 +52,22 @@ public final class VeinMinerPlusClient {
     static void resetSessionState() {
         clientMode = ChainMode.NORMAL;
         keyStateSent = false;
+        progressTicks = 0;
+    }
+
+    // Network messages arrive on the netty thread, so the fields are written on the client thread.
+    static void onProgress(int count, boolean interact) {
+        Minecraft.getMinecraft().addScheduledTask(() -> {
+            progressCount = count;
+            progressInteract = interact;
+            progressTicks = PROGRESS_TICKS;
+        });
+    }
+
+    static void tickProgress() {
+        if (progressTicks > 0) {
+            progressTicks--;
+        }
     }
 
     static void reportKeyBinding() {
@@ -79,10 +101,11 @@ public final class VeinMinerPlusClient {
         return isChainKeyActive(Minecraft.getMinecraft()) && GuiScreen.isShiftKeyDown();
     }
 
-    static void renderModeMenu(RenderGameOverlayEvent.Post event) {
+    static void renderHud(RenderGameOverlayEvent.Post event) {
         if (event.getType() != RenderGameOverlayEvent.ElementType.ALL) {
             return;
         }
+        renderProgress(event);
         Minecraft minecraft = Minecraft.getMinecraft();
         if (!isChainKeyActive(minecraft)) {
             return;
@@ -93,6 +116,22 @@ public final class VeinMinerPlusClient {
         } else {
             renderCurrentMode(minecraft);
         }
+    }
+
+    // Drawn where the vanilla action bar sits, so the counter reads the same as it did before.
+    private static void renderProgress(RenderGameOverlayEvent.Post event) {
+        if (progressTicks <= 0) {
+            return;
+        }
+
+        Minecraft minecraft = Minecraft.getMinecraft();
+        String key = progressInteract
+                ? "message.veinminerplus.interact_progress"
+                : "message.veinminerplus.progress";
+        String text = new TextComponentTranslation(key, progressCount).getUnformattedText();
+        ScaledResolution resolution = event.getResolution();
+        int x = (resolution.getScaledWidth() - minecraft.fontRenderer.getStringWidth(text)) / 2;
+        minecraft.fontRenderer.drawStringWithShadow(text, x, resolution.getScaledHeight() - 72, 0xFFFFFF);
     }
 
     // Outlines the positions the interaction mode would touch. The list comes from the same
