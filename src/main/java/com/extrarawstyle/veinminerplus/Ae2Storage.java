@@ -6,19 +6,26 @@ import appeng.api.networking.IGrid;
 import appeng.api.networking.IGridNode;
 import appeng.api.networking.energy.IEnergySource;
 import appeng.api.networking.security.IActionSource;
+import appeng.api.parts.IPartItem;
 import appeng.api.stacks.AEItemKey;
 import appeng.api.storage.MEStorage;
 import appeng.api.storage.StorageHelper;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 
 // Everything that touches AE2 classes lives in this one class, so the rest of the mod still loads
 // when AE2 is not installed.
 final class Ae2Storage {
+    // Compile-time constant, so referencing it does not load any AE2 class.
+    static final String MOD_ID = "ae2";
+
     private Ae2Storage() {
     }
 
@@ -48,9 +55,27 @@ final class Ae2Storage {
         };
     }
 
+    // True when the block is built to host a grid node (cable, machine, ...), whether or not an
+    // exposed node exists right now. This is how an unconnected AE2 block reports itself.
+    static boolean canHostGrid(Level level, BlockPos pos) {
+        return level.getCapability(AECapabilities.IN_WORLD_GRID_NODE_HOST, pos, null) != null;
+    }
+
+    // A held AE2 part item (cable, terminal, ...) is not a block item: every part is placed inside
+    // the one shared cable bus block, so that block is what a blacklist entry has to name. The AE2
+    // API jar (the compile-time dependency) does not expose the block constant, so the id is
+    // resolved through the block registry instead.
+    static Block blacklistBlock(ItemStack stack) {
+        if (!(stack.getItem() instanceof IPartItem<?>)) {
+            return null;
+        }
+        ResourceLocation id = ResourceLocation.fromNamespaceAndPath(MOD_ID, "cable_bus");
+        return BuiltInRegistries.BLOCK.containsKey(id) ? BuiltInRegistries.BLOCK.get(id) : null;
+    }
+
     // The bound block is resolved again on every flush, so a moved or broken target simply stops working.
     private static IGrid gridAt(Level level, BlockPos pos) {
-        if (level.getCapability(AECapabilities.IN_WORLD_GRID_NODE_HOST, pos, null) == null) {
+        if (!canHostGrid(level, pos)) {
             return null;
         }
         for (Direction side : Direction.values()) {

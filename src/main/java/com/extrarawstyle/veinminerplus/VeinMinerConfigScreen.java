@@ -16,6 +16,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
+import net.neoforged.fml.ModList;
 
 public final class VeinMinerConfigScreen extends Screen {
     private static final int PANEL_HEIGHT = 340;
@@ -196,25 +197,42 @@ public final class VeinMinerConfigScreen extends Screen {
         if (minecraft == null || minecraft.player == null || blacklist.size() >= BlockBlacklist.MAX_ENTRIES) {
             return false;
         }
-        if (!(minecraft.player.getMainHandItem().getItem() instanceof BlockItem blockItem)) {
+        Block held = heldBlock();
+        if (held == null) {
             return false;
         }
-        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(blockItem.getBlock());
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(held);
         return id != null && !blacklist.contains(id.toString());
     }
 
     private void addHeldBlock() {
-        if (minecraft == null || minecraft.player == null
-                || !(minecraft.player.getMainHandItem().getItem() instanceof BlockItem blockItem)) {
+        if (minecraft == null || minecraft.player == null) {
             return;
         }
-        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(blockItem.getBlock());
+        Block held = heldBlock();
+        if (held == null) {
+            return;
+        }
+        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(held);
         if (id == null || blacklist.contains(id.toString()) || blacklist.size() >= BlockBlacklist.MAX_ENTRIES) {
             return;
         }
         blacklist.add(id.toString());
         listPage = maxListPage();
         refreshRows();
+    }
+
+    // A plain block item resolves straight to its block. AE2 part items (cables, terminals, ...)
+    // are not block items but all place the one shared cable bus block, so AE2 is asked for those.
+    private Block heldBlock() {
+        ItemStack held = minecraft.player.getMainHandItem();
+        if (held.getItem() instanceof BlockItem blockItem) {
+            return blockItem.getBlock();
+        }
+        if (ModList.get().isLoaded(Ae2Storage.MOD_ID)) {
+            return Ae2Storage.blacklistBlock(held);
+        }
+        return null;
     }
 
     private void removeEntry(int slot) {

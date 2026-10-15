@@ -14,7 +14,7 @@ public final class Config {
             .defineInRange("maxNormalBlocks", 1024, 32, 32767);
 
     public static final ModConfigSpec.IntValue MAX_NORMAL_BLOCKS_PER_TICK = BUILDER
-            .comment("普通连锁模式每个服务端 Tick 的最大挖掘数。范围：1-384。")
+            .comment("普通连锁与 1x1/3x3 范围模式每个服务端 Tick 的最大挖掘数。范围：1-384。")
             .translation("veinminerplus.configuration.maxNormalBlocksPerTick")
             .defineInRange("maxNormalBlocksPerTick", 8, 1, 384);
 
