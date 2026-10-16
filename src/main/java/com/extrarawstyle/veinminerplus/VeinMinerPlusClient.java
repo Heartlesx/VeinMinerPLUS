@@ -191,7 +191,9 @@ public final class VeinMinerPlusClient {
         GuiGraphics graphics = event.getGuiGraphics();
 
         if (isChainKeyActive(minecraft)) {
-            if (Screen.hasShiftDown()) {
+            // A switch that just happened shows the full list too: on a key-path switch the list
+            // must appear even when Shift cannot act as the selector modifier (chain key = Shift).
+            if (isSelectorModifierHeld() || modeMenuTicks > 0) {
                 renderAllModes(graphics, minecraft);
             } else {
                 renderCurrentMode(graphics, minecraft);
@@ -308,7 +310,7 @@ public final class VeinMinerPlusClient {
 
     private static void syncKeyState() {
         Minecraft minecraft = Minecraft.getInstance();
-        boolean held = isChainKeyActive(minecraft) && !Screen.hasShiftDown();
+        boolean held = isChainKeyActive(minecraft) && !isSelectorModifierHeld();
         if (held == keyStateSent) {
             return;
         }
@@ -326,9 +328,16 @@ public final class VeinMinerPlusClient {
         keyStateSent = false;
     }
 
+    // The wheel selector's gate is "chain key held + Shift". When the player binds the chain key
+    // to a Shift key itself, that gate would be open all the time, so the selector gives way to
+    // chaining: the wheel no longer opens it, and Shift+arrow switching keeps working.
+    private static boolean isSelectorModifierHeld() {
+        return Screen.hasShiftDown() && !KeyModifier.SHIFT.matches(CHAIN_KEY.getKey());
+    }
+
     private static boolean isModeSelectorOpen() {
         Minecraft minecraft = Minecraft.getInstance();
-        return isChainKeyActive(minecraft) && Screen.hasShiftDown();
+        return isChainKeyActive(minecraft) && isSelectorModifierHeld();
     }
 
     private static boolean isChainKeyActive(Minecraft minecraft) {
