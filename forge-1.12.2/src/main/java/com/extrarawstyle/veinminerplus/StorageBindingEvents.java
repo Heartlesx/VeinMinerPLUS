@@ -1,10 +1,5 @@
 package com.extrarawstyle.veinminerplus;
 
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
-
-import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.EnumHand;
@@ -17,15 +12,6 @@ import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 
 public final class StorageBindingEvents {
-    // 1.12.2 registers its blocks under the old namespace; "ae2" is only the namespace from 1.16 on.
-    private static final String AE2_MOD_ID = "appliedenergistics2";
-    private static final String AE2_NAMESPACE = "appliedenergistics2";
-    // A backpack counts as Sophisticated Storage when it is placed on the ground; a carried one has
-    // its own magnet upgrade and is deliberately left alone.
-    private static final Set<String> SOPHISTICATED_NAMESPACES = new HashSet<>(Arrays.asList(
-            "sophisticatedstorage", "sophisticatedbackpacks"));
-    private static final String FUNCTIONAL_NAMESPACE = "functionalstorage";
-
     // Binding has to happen before the block gets the click, otherwise the ME controller or a drawer
     // would open its own screen instead.
     @SubscribeEvent(priority = EventPriority.HIGHEST)
@@ -44,9 +30,10 @@ public final class StorageBindingEvents {
         }
 
         BlockPos pos = event.getPos();
-        String namespace = event.getWorld().getBlockState(pos).getBlock().getRegistryName().getNamespace();
-        // The mod id is checked before Ae2Storage is touched, so no AE2 class is loaded without AE2.
-        if (Loader.isModLoaded(AE2_MOD_ID) && AE2_NAMESPACE.equals(namespace)) {
+        // A block of the AE2 grid binds to the network. The grid host interface decides this, not
+        // the block's namespace, so the blocks of AE2 addons are covered as well. The mod id is
+        // checked before Ae2Storage is touched, so no AE2 class is loaded without AE2.
+        if (Loader.isModLoaded(Ae2Storage.MOD_ID) && Ae2Storage.isGridHost(event.getWorld(), pos)) {
             if (Ae2Storage.canBind(event.getWorld(), pos)) {
                 bind(event, player, card, StorageBindings.TYPE_AE2, pos);
             } else {
@@ -55,13 +42,11 @@ public final class StorageBindingEvents {
             }
             return;
         }
-        if (SOPHISTICATED_NAMESPACES.contains(namespace)) {
-            bind(event, player, card, StorageBindings.TYPE_SOPHISTICATED, pos);
-        } else if (FUNCTIONAL_NAMESPACE.equals(namespace)) {
-            bind(event, player, card, StorageBindings.TYPE_FUNCTIONAL, pos);
-        } else if (StorageRouter.blockHandler(player.getServerWorld(), pos) != null) {
-            // Anything that exposes an item handler is worth binding, which covers vanilla chests,
-            // hoppers and furnaces as well as the machines of other mods.
+        // Everything else with an item handler binds as a plain container, which covers vanilla
+        // chests, hoppers and furnaces as well as the machines and storage blocks of other mods.
+        // The same handler check is what the flush uses later, so whatever can be bound here can
+        // also be filled.
+        if (StorageRouter.blockHandler(player.getServerWorld(), pos) != null) {
             bind(event, player, card, StorageBindings.TYPE_BLOCK, pos);
         } else {
             // Nothing to bind here, so the click is left alone and the block behaves as always.
@@ -78,6 +63,11 @@ public final class StorageBindingEvents {
         StorageBindings.write(card, new StorageBindings(type, target));
         player.sendStatusMessage(new TextComponentTranslation("message.veinminerplus.binder." + type,
                 new TextComponentString(pos.getX() + ", " + pos.getY() + ", " + pos.getZ())), true);
+        // A binding does nothing while the config switch is off, and nothing else would say so.
+        if (!Config.storageBinding) {
+            player.sendStatusMessage(
+                    new TextComponentTranslation("message.veinminerplus.binder.disabled"), false);
+        }
         event.setCanceled(true);
     }
 }

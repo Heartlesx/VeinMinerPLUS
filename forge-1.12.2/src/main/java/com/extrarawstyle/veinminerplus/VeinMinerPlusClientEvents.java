@@ -62,6 +62,9 @@ public final class VeinMinerPlusClientEvents {
         if (event.phase == TickEvent.Phase.END) {
             VeinMinerPlusClient.syncKeyState();
             VeinMinerPlusClient.tickProgress();
+            VeinMinerPlusClient.tickModeKeys();
+            VeinMinerPlusClient.tickPreviewHold();
+            VeinMinerPlusClient.tickBlacklistKey();
         }
     }
 }

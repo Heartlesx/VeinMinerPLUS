@@ -16,9 +16,6 @@ import net.minecraftforge.items.ItemHandlerHelper;
 // Turns the binding of a card into the sink that takes the drops. The target is resolved once per flush
 // and then reused for every stack, so a flush with many stacks does not repeat the lookups.
 final class StorageRouter {
-    // 1.12.2 keeps the old mod id; "ae2" is only the id from 1.16 on.
-    private static final String AE2_MOD_ID = "appliedenergistics2";
-
     @CapabilityInject(IItemHandler.class)
     private static Capability<IItemHandler> itemHandler = null;
 
@@ -38,7 +35,7 @@ final class StorageRouter {
         BlockPos pos = new BlockPos(bindings.target().x(), bindings.target().y(), bindings.target().z());
         if (StorageBindings.TYPE_AE2.equals(bindings.type())) {
             // The mod id is checked before Ae2Storage is touched, so no AE2 class is loaded without AE2.
-            return Loader.isModLoaded(AE2_MOD_ID) ? Ae2Storage.sink(level, pos, player) : null;
+            return Loader.isModLoaded(Ae2Storage.MOD_ID) ? Ae2Storage.sink(level, pos, player) : null;
         }
         IItemHandler handler = blockHandler(level, pos);
         return handler == null ? null : stack -> {

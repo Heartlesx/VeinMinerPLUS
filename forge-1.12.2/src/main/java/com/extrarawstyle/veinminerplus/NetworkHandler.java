@@ -1,9 +1,19 @@
 package com.extrarawstyle.veinminerplus;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
+
 import io.netty.buffer.ByteBuf;
 
+import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.util.ResourceLocation;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.text.TextComponentTranslation;
+import net.minecraft.world.WorldServer;
+import net.minecraftforge.fml.common.network.ByteBufUtils;
 import net.minecraftforge.fml.common.network.NetworkRegistry;
 import net.minecraftforge.fml.common.network.simpleimpl.IMessage;
 import net.minecraftforge.fml.common.network.simpleimpl.IMessageHandler;
@@ -29,6 +39,8 @@ public final class NetworkHandler {
         channel.registerMessage(ConfigSnapshotHandler.class, ConfigSnapshotMessage.class, packetId++, Side.CLIENT);
         channel.registerMessage(ConfigUpdateHandler.class, ConfigUpdateMessage.class, packetId++, Side.SERVER);
         channel.registerMessage(ProgressHandler.class, ProgressMessage.class, packetId++, Side.CLIENT);
+        channel.registerMessage(BlacklistToggleHandler.class, BlacklistToggleMessage.class, packetId++, Side.SERVER);
+        channel.registerMessage(BlacklistSyncHandler.class, BlacklistSyncMessage.class, packetId++, Side.CLIENT);
     }
 
     static void sendKeyState(boolean held) {
@@ -54,23 +66,51 @@ public final class NetworkHandler {
         channel.sendTo(new ProgressMessage(count, interact), player);
     }
 
+    static void sendBlacklistToggle(BlockPos pos) {
+        channel.sendToServer(new BlacklistToggleMessage(pos));
+    }
+
+    static void sendBlacklistSync(EntityPlayerMP player) {
+        channel.sendTo(new BlacklistSyncMessage(currentBlacklist()), player);
+    }
+
     static void sendConfigUpdate(int maxNormalBlocks, int maxNormalBlocksPerTick, int maxBlastBlocks,
-            int maxBlastBlocksPerTick, int blastSearchDistance, boolean noHungerCost, boolean storageBinding) {
+            int maxBlastBlocksPerTick, int blastSearchDistance, boolean noHungerCost, boolean storageBinding,
+            List<String> blacklist) {
         channel.sendToServer(new ConfigUpdateMessage(maxNormalBlocks, maxNormalBlocksPerTick, maxBlastBlocks,
-                maxBlastBlocksPerTick, blastSearchDistance, noHungerCost, storageBinding));
+                maxBlastBlocksPerTick, blastSearchDistance, noHungerCost, storageBinding, blacklist));
+    }
+
+    private static List<String> currentBlacklist() {
+        return new ArrayList<>(Arrays.asList(Config.blockBlacklist));
+    }
+
+    private static void broadcastBlacklist(EntityPlayerMP source) {
+        List<String> list = currentBlacklist();
+        for (EntityPlayerMP target : source.server.getPlayerList().getPlayers()) {
+            channel.sendTo(new BlacklistSyncMessage(list), target);
+        }
     }
 
     private static void applyConfig(EntityPlayerMP player, int maxNormalBlocks, int maxNormalBlocksPerTick,
             int maxBlastBlocks, int maxBlastBlocksPerTick, int blastSearchDistance, boolean noHungerCost,
-            boolean storageBinding) {
-        Config.maxNormalBlocks = clamp(maxNormalBlocks, 32, 32767);
-        Config.maxNormalBlocksPerTick = clamp(maxNormalBlocksPerTick, 1, 384);
-        Config.maxBlastBlocks = clamp(maxBlastBlocks, 32, 32767);
-        Config.maxBlastBlocksPerTick = clamp(maxBlastBlocksPerTick, 1, 512);
-        Config.blastSearchDistance = clamp(blastSearchDistance, 3, 128);
+            boolean storageBinding, List<String> blacklist) {
+        Config.maxNormalBlocks = clamp(maxNormalBlocks, Config.MIN_MAX_NORMAL_BLOCKS,
+                Config.MAX_MAX_NORMAL_BLOCKS);
+        Config.maxNormalBlocksPerTick = clamp(maxNormalBlocksPerTick, Config.MIN_MAX_NORMAL_BLOCKS_PER_TICK,
+                Config.MAX_MAX_NORMAL_BLOCKS_PER_TICK);
+        Config.maxBlastBlocks = clamp(maxBlastBlocks, Config.MIN_MAX_BLAST_BLOCKS,
+                Config.MAX_MAX_BLAST_BLOCKS);
+        Config.maxBlastBlocksPerTick = clamp(maxBlastBlocksPerTick, Config.MIN_MAX_BLAST_BLOCKS_PER_TICK,
+                Config.MAX_MAX_BLAST_BLOCKS_PER_TICK);
+        Config.blastSearchDistance = clamp(blastSearchDistance, Config.MIN_BLAST_SEARCH_DISTANCE,
+                Config.MAX_BLAST_SEARCH_DISTANCE);
         Config.noHungerCost = noHungerCost;
         Config.storageBinding = storageBinding;
+        Config.blockBlacklist = sanitizeBlacklist(blacklist).toArray(new String[0]);
         Config.save();
+        BlockBlacklist.applyServerConfig();
+        broadcastBlacklist(player);
         player.sendStatusMessage(new TextComponentTranslation("message.veinminerplus.config_saved"), false);
     }
 
@@ -80,6 +120,94 @@ public final class NetworkHandler {
 
     private static boolean isOperator(EntityPlayerMP player) {
         return player.canUseCommand(2, "veinminerplus");
+    }
+
+    // The hotkey path: the client sends the block it aims at, the server revalidates everything
+    // (permission, sneak posture, distance) before it touches the shared config.
+    private static void handleBlacklistToggle(EntityPlayerMP player, BlockPos pos) {
+        if (!isOperator(player)) {
+            player.sendStatusMessage(
+                    new TextComponentTranslation("message.veinminerplus.blacklist.no_permission"), true);
+            return;
+        }
+        if (!player.isSneaking()) {
+            return;
+        }
+        WorldServer level = player.getServerWorld();
+        // The distance bound is what keeps a stale or forged packet from editing the list for a
+        // block that is out of reach.
+        if (!level.isValid(pos)
+                || player.getPositionEyes(1.0F).squareDistanceTo(pos.getX() + 0.5D, pos.getY() + 0.5D,
+                        pos.getZ() + 0.5D) > 100.0D) {
+            return;
+        }
+        IBlockState state = level.getBlockState(pos);
+        if (state.getBlock().isAir(state, level, pos)) {
+            return;
+        }
+        ResourceLocation id = state.getBlock().getRegistryName();
+        if (id == null) {
+            return;
+        }
+
+        List<String> list = new ArrayList<>(Arrays.asList(Config.blockBlacklist));
+        boolean added;
+        if (list.remove(id.toString())) {
+            added = false;
+        } else {
+            if (list.size() >= BlockBlacklist.MAX_ENTRIES) {
+                player.sendStatusMessage(new TextComponentTranslation(
+                        "message.veinminerplus.blacklist.full", BlockBlacklist.MAX_ENTRIES), true);
+                return;
+            }
+            list.add(id.toString());
+            added = true;
+        }
+
+        Config.blockBlacklist = sanitizeBlacklist(list).toArray(new String[0]);
+        Config.save();
+        BlockBlacklist.applyServerConfig();
+        broadcastBlacklist(player);
+        player.sendStatusMessage(new TextComponentTranslation(
+                added ? "message.veinminerplus.blacklist.added" : "message.veinminerplus.blacklist.removed",
+                state.getBlock().getLocalizedName()), true);
+    }
+
+    // Entries with a broken syntax or a duplicate are dropped, and the list never grows past the
+    // cap, so the config and the synced mirror stay canonical whatever the client sent.
+    private static List<String> sanitizeBlacklist(List<String> entries) {
+        LinkedHashSet<String> clean = new LinkedHashSet<>();
+        for (String raw : entries) {
+            if (clean.size() >= BlockBlacklist.MAX_ENTRIES) {
+                break;
+            }
+            if (raw == null || raw.trim().isEmpty()) {
+                continue;
+            }
+            try {
+                clean.add(new ResourceLocation(raw.trim()).toString());
+            } catch (RuntimeException exception) {
+                continue;
+            }
+        }
+        return new ArrayList<>(clean);
+    }
+
+    private static void writeBlacklist(ByteBuf buffer, List<String> entries) {
+        int size = Math.min(entries.size(), BlockBlacklist.MAX_ENTRIES);
+        buffer.writeInt(size);
+        for (int index = 0; index < size; index++) {
+            ByteBufUtils.writeUTF8String(buffer, entries.get(index));
+        }
+    }
+
+    private static List<String> readBlacklist(ByteBuf buffer) {
+        int size = Math.min(Math.max(buffer.readInt(), 0), BlockBlacklist.MAX_ENTRIES);
+        List<String> entries = new ArrayList<>(size);
+        for (int index = 0; index < size; index++) {
+            entries.add(ByteBufUtils.readUTF8String(buffer));
+        }
+        return entries;
     }
 
     public static class KeyStateMessage implements IMessage {
@@ -187,13 +315,14 @@ public final class NetworkHandler {
         int blastSearchDistance;
         boolean noHungerCost;
         boolean storageBinding;
+        List<String> blacklist;
 
         public ConfigSnapshotMessage() {
         }
 
         private ConfigSnapshotMessage(int maxNormalBlocks, int maxNormalBlocksPerTick, int maxBlastBlocks,
                 int maxBlastBlocksPerTick, int blastSearchDistance, boolean noHungerCost,
-                boolean storageBinding) {
+                boolean storageBinding, List<String> blacklist) {
             this.maxNormalBlocks = maxNormalBlocks;
             this.maxNormalBlocksPerTick = maxNormalBlocksPerTick;
             this.maxBlastBlocks = maxBlastBlocks;
@@ -201,12 +330,13 @@ public final class NetworkHandler {
             this.blastSearchDistance = blastSearchDistance;
             this.noHungerCost = noHungerCost;
             this.storageBinding = storageBinding;
+            this.blacklist = blacklist;
         }
 
         static ConfigSnapshotMessage current() {
             return new ConfigSnapshotMessage(Config.maxNormalBlocks, Config.maxNormalBlocksPerTick,
                     Config.maxBlastBlocks, Config.maxBlastBlocksPerTick, Config.blastSearchDistance,
-                    Config.noHungerCost, Config.storageBinding);
+                    Config.noHungerCost, Config.storageBinding, currentBlacklist());
         }
 
         @Override
@@ -218,6 +348,7 @@ public final class NetworkHandler {
             blastSearchDistance = buffer.readInt();
             noHungerCost = buffer.readBoolean();
             storageBinding = buffer.readBoolean();
+            blacklist = readBlacklist(buffer);
         }
 
         @Override
@@ -229,6 +360,7 @@ public final class NetworkHandler {
             buffer.writeInt(blastSearchDistance);
             buffer.writeBoolean(noHungerCost);
             buffer.writeBoolean(storageBinding);
+            writeBlacklist(buffer, blacklist);
         }
     }
 
@@ -273,6 +405,71 @@ public final class NetworkHandler {
         }
     }
 
+    public static class BlacklistToggleMessage implements IMessage {
+        private BlockPos pos;
+
+        public BlacklistToggleMessage() {
+        }
+
+        private BlacklistToggleMessage(BlockPos pos) {
+            this.pos = pos;
+        }
+
+        @Override
+        public void fromBytes(ByteBuf buffer) {
+            pos = new BlockPos(buffer.readInt(), buffer.readInt(), buffer.readInt());
+        }
+
+        @Override
+        public void toBytes(ByteBuf buffer) {
+            buffer.writeInt(pos.getX());
+            buffer.writeInt(pos.getY());
+            buffer.writeInt(pos.getZ());
+        }
+    }
+
+    public static class BlacklistToggleHandler implements IMessageHandler<BlacklistToggleMessage, IMessage> {
+        @Override
+        public IMessage onMessage(BlacklistToggleMessage message, MessageContext context) {
+            EntityPlayerMP player = context.getServerHandler().player;
+            if (player == null) {
+                return null;
+            }
+            BlockPos pos = message.pos;
+            player.server.addScheduledTask(() -> handleBlacklistToggle(player, pos));
+            return null;
+        }
+    }
+
+    public static class BlacklistSyncMessage implements IMessage {
+        private List<String> entries = new ArrayList<>();
+
+        public BlacklistSyncMessage() {
+        }
+
+        BlacklistSyncMessage(List<String> entries) {
+            this.entries = entries;
+        }
+
+        @Override
+        public void fromBytes(ByteBuf buffer) {
+            entries = readBlacklist(buffer);
+        }
+
+        @Override
+        public void toBytes(ByteBuf buffer) {
+            writeBlacklist(buffer, entries);
+        }
+    }
+
+    public static class BlacklistSyncHandler implements IMessageHandler<BlacklistSyncMessage, IMessage> {
+        @Override
+        public IMessage onMessage(BlacklistSyncMessage message, MessageContext context) {
+            VeinMinerPlusClient.applyBlacklist(message.entries);
+            return null;
+        }
+    }
+
     public static class ConfigUpdateMessage implements IMessage {
         private int maxNormalBlocks;
         private int maxNormalBlocksPerTick;
@@ -281,13 +478,14 @@ public final class NetworkHandler {
         private int blastSearchDistance;
         private boolean noHungerCost;
         private boolean storageBinding;
+        private List<String> blacklist;
 
         public ConfigUpdateMessage() {
         }
 
         ConfigUpdateMessage(int maxNormalBlocks, int maxNormalBlocksPerTick, int maxBlastBlocks,
                 int maxBlastBlocksPerTick, int blastSearchDistance, boolean noHungerCost,
-                boolean storageBinding) {
+                boolean storageBinding, List<String> blacklist) {
             this.maxNormalBlocks = maxNormalBlocks;
             this.maxNormalBlocksPerTick = maxNormalBlocksPerTick;
             this.maxBlastBlocks = maxBlastBlocks;
@@ -295,6 +493,7 @@ public final class NetworkHandler {
             this.blastSearchDistance = blastSearchDistance;
             this.noHungerCost = noHungerCost;
             this.storageBinding = storageBinding;
+            this.blacklist = blacklist;
         }
 
         @Override
@@ -306,6 +505,7 @@ public final class NetworkHandler {
             blastSearchDistance = buffer.readInt();
             noHungerCost = buffer.readBoolean();
             storageBinding = buffer.readBoolean();
+            blacklist = readBlacklist(buffer);
         }
 
         @Override
@@ -317,6 +517,7 @@ public final class NetworkHandler {
             buffer.writeInt(blastSearchDistance);
             buffer.writeBoolean(noHungerCost);
             buffer.writeBoolean(storageBinding);
+            writeBlacklist(buffer, blacklist);
         }
     }
 
@@ -333,7 +534,7 @@ public final class NetworkHandler {
                 }
                 applyConfig(player, message.maxNormalBlocks, message.maxNormalBlocksPerTick,
                         message.maxBlastBlocks, message.maxBlastBlocksPerTick, message.blastSearchDistance,
-                        message.noHungerCost, message.storageBinding);
+                        message.noHungerCost, message.storageBinding, message.blacklist);
             });
             return null;
         }

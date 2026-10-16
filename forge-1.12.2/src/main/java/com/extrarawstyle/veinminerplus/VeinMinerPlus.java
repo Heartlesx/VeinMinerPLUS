@@ -13,7 +13,7 @@ import org.apache.logging.log4j.Logger;
 public class VeinMinerPlus {
     public static final String MODID = "veinminerplus";
     public static final String NAME = "VeinMinerPlus";
-    public static final String VERSION = "4.2.6-dev3-forge-1.12.2";
+    public static final String VERSION = "4.2.6-dev5-forge-1.12.2";
 
     public static Logger logger;
 
@@ -42,5 +42,8 @@ public class VeinMinerPlus {
     @Mod.EventHandler
     public void serverStarting(FMLServerStartingEvent event) {
         CommandEvents.onServerStarting(event);
+        // The block registry is only complete once the registry events have run, so the blacklist
+        // is resolved here rather than while the config file is read.
+        BlockBlacklist.applyServerConfig();
     }
 }

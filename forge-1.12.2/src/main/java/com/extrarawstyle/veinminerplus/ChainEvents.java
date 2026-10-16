@@ -64,7 +64,6 @@ public final class ChainEvents {
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
     private static final int SPARSE_SCANS_PER_TICK = 256;
-    private static final int BLOCK_BREAKS_PER_TICK = 8;
     // One player action can break a whole area through a tool of another mod, and every block of
     // it arrives as its own break event. The positions are collected up to this many.
     private static final int PENDING_SEED_LIMIT = 256;
@@ -86,6 +85,9 @@ public final class ChainEvents {
     private static final String ORE_PREFIX = "ore";
     private static final String LOG_ORE_NAME = "logWood";
     private static final String GREGTECH_MOD_ID = "gregtech";
+    // 1.12.2 Forge ships no constant for the vanilla tool class names, so the shovel name is kept
+    // here as one. GregTech registers its tools under this class instead of extending ItemSpade.
+    private static final String SHOVEL_TOOL_CLASS = "shovel";
 
     private static final List<BlockPos> NORMAL_OFFSETS = createNormalOffsets();
     private static final Map<Integer, List<BlockPos>> BLAST_OFFSETS = new ConcurrentHashMap<>();
@@ -148,6 +150,15 @@ public final class ChainEvents {
         LAST_BREAK_FACES.remove(id);
         TRACED_BREAKS.remove(id);
         TRACED_FAILURES.remove(id);
+    }
+
+    @SubscribeEvent
+    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        // The client mirror of the blacklist is built from this first snapshot; every later change
+        // broadcasts a fresh one.
+        if (event.player instanceof EntityPlayerMP) {
+            NetworkHandler.sendBlacklistSync((EntityPlayerMP) event.player);
+        }
     }
 
     @SubscribeEvent
@@ -376,8 +387,10 @@ public final class ChainEvents {
     static boolean collectInteractTargets(World level, BlockPos origin, ItemStack stack, int limit,
             List<BlockPos> targets) {
         IBlockState originState = level.getBlockState(origin);
-        if (isHarvestable(originState)) {
-            spreadSquare(level, origin, limit, targets, pos -> isHarvestable(level.getBlockState(pos)));
+        if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
+            spreadSquare(level, origin, limit, targets,
+                    pos -> isHarvestable(level.getBlockState(pos))
+                            && !BlockBlacklist.contains(level.getBlockState(pos)));
             return true;
         }
         Item item = stack.getItem();
@@ -385,9 +398,9 @@ public final class ChainEvents {
             spreadSquare(level, origin, limit, targets, pos -> isTillable(level, pos));
             return true;
         }
-        // GregTech registers its tools under the vanilla "shovel" tool class instead of extending
+        // GregTech registers its tools under the vanilla shovel tool class instead of extending
         // ItemSpade, so the class alone would miss them.
-        if (item instanceof ItemSpade || item.getToolClasses(stack).contains("shovel")) {
+        if (item instanceof ItemSpade || item.getToolClasses(stack).contains(SHOVEL_TOOL_CLASS)) {
             spreadSquare(level, origin, limit, targets, pos -> isPathable(level, pos));
             return true;
         }
@@ -577,13 +590,16 @@ public final class ChainEvents {
     // the hot path in isEligible still allocates nothing.
     private static String eligibilityFailure(WorldServer level, EntityPlayerMP player, BlockPos pos,
             IBlockState state, IBlockState targetState, ChainMode mode) {
+        if (BlockBlacklist.contains(state)) {
+            return "blacklisted";
+        }
         if (state.getBlock().isAir(state, level, pos)) {
             return "air";
         }
         if (!level.isBlockModifiable(player, pos)) {
             return "not-modifiable";
         }
-        if (state.getBlockHardness(level, pos) < 0.0F) {
+        if (isUnbreakable(level, player, pos, state)) {
             return "hardness=" + state.getBlockHardness(level, pos);
         }
         boolean matches;
@@ -592,6 +608,7 @@ public final class ChainEvents {
                 matches = true;
                 break;
             case BLAST_ORES:
+            case EXTREME_BLAST_ORES:
                 matches = isOre(state);
                 break;
             case BLAST_LOGS:
@@ -610,10 +627,27 @@ public final class ChainEvents {
         return "eligible";
     }
 
+    // A negative block hardness is vanilla's "unbreakable" marker (bedrock and friends). Some mods
+    // register mineable blocks that way while overriding the progress rules, so the marker alone is
+    // not the answer: the block only counts as unbreakable when the player cannot make progress on
+    // it right now and no tool class claims to harvest it. 1.12.2 has no mineable tags; the block's
+    // own harvest tool is the same signal the tags carry on the newer versions.
+    private static boolean isUnbreakable(WorldServer level, EntityPlayerMP player, BlockPos pos,
+            IBlockState state) {
+        Block block = state.getBlock();
+        if (state.getBlockHardness(level, pos) >= 0.0F) {
+            return false;
+        }
+        if (block.getPlayerRelativeBlockHardness(state, player, level, pos) > 0.0F) {
+            return false;
+        }
+        return block.getHarvestTool(state) == null;
+    }
+
     private static boolean isEligible(WorldServer level, EntityPlayerMP player, BlockPos pos, IBlockState state,
             IBlockState targetState, ChainMode mode) {
-        if (state.getBlock().isAir(state, level, pos) || !level.isBlockModifiable(player, pos)
-                || state.getBlockHardness(level, pos) < 0.0F) {
+        if (BlockBlacklist.contains(state) || state.getBlock().isAir(state, level, pos)
+                || !level.isBlockModifiable(player, pos) || isUnbreakable(level, player, pos, state)) {
             return false;
         }
 
@@ -623,6 +657,7 @@ public final class ChainEvents {
                 matches = true;
                 break;
             case BLAST_ORES:
+            case EXTREME_BLAST_ORES:
                 matches = isOre(state);
                 break;
             case BLAST_LOGS:
@@ -974,7 +1009,7 @@ public final class ChainEvents {
     private static boolean interactOne(WorldServer level, EntityPlayerMP player, BlockPos pos) {
         IBlockState state = level.getBlockState(pos);
         if (isHarvestable(state)) {
-            return harvestOne(level, player, pos, state);
+            return !BlockBlacklist.contains(state) && harvestOne(level, player, pos, state);
         }
 
         ItemStack stack = player.getHeldItemMainhand();
@@ -1150,7 +1185,9 @@ public final class ChainEvents {
             } else {
                 this.graphOffsets = NORMAL_OFFSETS;
             }
-            this.sparseBlast = mode == ChainMode.BLAST_ORES
+            // An extreme blast always scans by chunk: one palette pass beats the graph's per-node
+            // offset walks for every block type, not just the scattered veins.
+            this.sparseBlast = mode.isExtremeBlast() || mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
                     || mode == ChainMode.BLAST_SAME && (isOre(targetState) || isLog(targetState));
             this.sparseTargets = new PriorityQueue<>(new Comparator<BlockPos>() {
@@ -1225,14 +1262,9 @@ public final class ChainEvents {
             int checks = 0;
             int breaks = 0;
             int checkLimit = mode.isBlast() ? effectiveBlastSearchChecks() : SEARCH_CHECKS_PER_TICK;
-            int breakLimit;
-            if (mode.isBlast()) {
-                breakLimit = effectiveBlastBreakLimit();
-            } else if (mode == ChainMode.NORMAL) {
-                breakLimit = Config.maxNormalBlocksPerTick;
-            } else {
-                breakLimit = BLOCK_BREAKS_PER_TICK;
-            }
+            // Every non-blast mode shares the normal per-tick budget on purpose: one knob tunes
+            // normal chains and both area sizes alike.
+            int breakLimit = mode.isBlast() ? effectiveBlastBreakLimit() : Config.maxNormalBlocksPerTick;
             while (checks < checkLimit && breaks < breakLimit
                     && !frontier.isEmpty() && brokenCount < totalLimit
                     && HELD_KEYS.contains(player.getUniqueID())) {
@@ -1277,7 +1309,9 @@ public final class ChainEvents {
             int size = mode == ChainMode.AREA_1X1 ? 1 : 3;
             int planeSize = size * size;
             int breaks = 0;
-            while (breaks < BLOCK_BREAKS_PER_TICK && areaDepth <= areaDepthLimit
+            // Area modes share the normal per-tick budget on purpose: one knob tunes both speeds.
+            int breakLimit = Config.maxNormalBlocksPerTick;
+            while (breaks < breakLimit && areaDepth <= areaDepthLimit
                     && HELD_KEYS.contains(player.getUniqueID())) {
                 if (areaIndex >= planeSize) {
                     areaDepth++;
@@ -1314,14 +1348,17 @@ public final class ChainEvents {
         }
 
         private void tickSparseBlast() {
+            boolean extreme = mode.isExtremeBlast();
             int breaks = 0;
             int scannedCenters = 0;
-            int breakLimit = effectiveBlastBreakLimit();
+            // An extreme blast is deliberately unthrottled: the whole chain finishes inside this tick.
+            int breakLimit = extreme ? Integer.MAX_VALUE : effectiveBlastBreakLimit();
             // While targets are queued no scanning happens, so a finished vein can leave a
             // large backlog of centres behind and every one of them would be walked in a
             // single tick. Capping the number walked per tick bounds that worst case; the
             // remainder is simply handled on the following ticks.
-            int centerLimit = Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
+            int centerLimit = extreme ? Integer.MAX_VALUE
+                    : Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
             while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUniqueID())) {
                 while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
                     scanSparseCenter(sparseCenters.removeFirst());
@@ -1352,7 +1389,8 @@ public final class ChainEvents {
         }
 
         private boolean updateTpsSafety() {
-            if (!mode.isBlast()) {
+            // The extreme blasts deliberately run without the TPS guard.
+            if (!mode.isBlast() || mode.isExtremeBlast()) {
                 return true;
             }
 
@@ -1424,12 +1462,16 @@ public final class ChainEvents {
                         List<BlockPos> matches;
                         if (sparseScannedSections.add(key)) {
                             matches = scanSection(chunkX, sectionY, chunkZ);
+                            if (matches == null) {
+                                // The chunk is not resident. Skipping it keeps the scan from
+                                // generating terrain inside this tick, and the section stays
+                                // unscanned so a later centre can pick it up once it is loaded.
+                                sparseScannedSections.remove(key);
+                                continue;
+                            }
                             sparseSectionMatches.put(key, matches);
                         } else {
                             matches = sparseSectionMatches.get(key);
-                        }
-                        if (matches == null) {
-                            continue;
                         }
 
                         for (int index = 0; index < matches.size();) {
@@ -1452,6 +1494,9 @@ public final class ChainEvents {
 
         private List<BlockPos> scanSection(int chunkX, int sectionY, int chunkZ) {
             Chunk chunk = chunkAt(chunkX, chunkZ);
+            if (chunk == null) {
+                return null;
+            }
             List<BlockPos> matches = new ArrayList<>();
             int baseY = sectionY << 4;
             for (int x = 0; x < 16; x++) {
@@ -1466,19 +1511,30 @@ public final class ChainEvents {
             return matches;
         }
 
+        // Only chunks that are already loaded are walked. Asking the provider for a chunk generates
+        // it right inside this tick, and against fresh terrain the scan would keep finding new
+        // ground to generate - one tick that never ends. Returns null when the chunk is not
+        // resident, so the caller can skip it.
         private Chunk chunkAt(int chunkX, int chunkZ) {
             long key = chunkKey(chunkX, chunkZ);
             Chunk chunk = loadedChunks.get(key);
             if (chunk == null) {
-                chunk = level.getChunk(chunkX, chunkZ);
+                chunk = level.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
+                if (chunk == null) {
+                    return null;
+                }
                 loadedChunks.put(key, chunk);
             }
             return chunk;
         }
 
         private boolean matchesSparseState(IBlockState state) {
+            if (BlockBlacklist.contains(state)) {
+                return false;
+            }
             switch (mode) {
                 case BLAST_ORES:
+                case EXTREME_BLAST_ORES:
                     return isOre(state);
                 case BLAST_LOGS:
                     return isLog(state);
