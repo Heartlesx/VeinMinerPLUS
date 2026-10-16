@@ -31,6 +31,13 @@ public final class VeinMinerPlusClientEvents {
 
     @SubscribeEvent
     public static void onKey(InputEvent.Key event) {
+        if (VeinMinerPlusClient.BLACKLIST_KEY.matches(event.getKey(), event.getScanCode())) {
+            if (event.getAction() == GLFW.GLFW_PRESS) {
+                VeinMinerPlusClient.toggleBlacklist();
+            }
+            return;
+        }
+
         // Mode switching reacts to the press only; the held repeat is timed in the client
         // tick because GLFW repeat events fire at the OS rate.
         if (event.getAction() == GLFW.GLFW_PRESS && Minecraft.getInstance().player != null) {
@@ -88,6 +95,9 @@ public final class VeinMinerPlusClientEvents {
         if (event.phase == TickEvent.Phase.END) {
             VeinMinerPlusClient.syncKeyState();
             VeinMinerPlusClient.tickModeKeys();
+            if (VeinMinerPlusClient.previewHoldTicks > 0) {
+                VeinMinerPlusClient.previewHoldTicks--;
+            }
         }
     }
 }

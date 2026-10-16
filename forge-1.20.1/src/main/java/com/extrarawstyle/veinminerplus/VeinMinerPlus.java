@@ -20,6 +20,8 @@ public class VeinMinerPlus {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
         ModItems.register(modEventBus);
         NetworkHandler.register();
+        modEventBus.addListener(BlockBlacklist::onConfigLoading);
+        modEventBus.addListener(BlockBlacklist::onConfigReloading);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         MinecraftForge.EVENT_BUS.register(new ChainEvents());
         MinecraftForge.EVENT_BUS.register(new CommandEvents());

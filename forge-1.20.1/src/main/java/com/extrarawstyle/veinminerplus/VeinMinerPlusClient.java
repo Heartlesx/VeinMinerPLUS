@@ -18,6 +18,7 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -35,6 +36,11 @@ public final class VeinMinerPlusClient {
             "key.veinminerplus.chain",
             InputConstants.Type.KEYSYM,
             GLFW.GLFW_KEY_GRAVE_ACCENT,
+            "key.categories.veinminerplus");
+    static final KeyMapping BLACKLIST_KEY = new KeyMapping(
+            "key.veinminerplus.blacklist",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_KP_ADD,
             "key.categories.veinminerplus");
     // Shift + arrow keys switch modes on their own, without the chain key. Both are
     // rebindable, and the shift part belongs to the binding instead of a hardcoded check.
@@ -57,11 +63,16 @@ public final class VeinMinerPlusClient {
     private static final int MODE_REPEAT_TICKS = 10;
     // The full mode list lingers for 0.5 s after the latest switch.
     private static final int MODE_MENU_LINGER_TICKS = 10;
+    // The last valid preview outline is held for 0.4 s so a briefly invalid aim does not strobe.
+    private static final int PREVIEW_HOLD_TICKS = 8;
 
     static ChainMode clientMode = ChainMode.NORMAL;
     private static boolean keyStateSent;
     static int modeKeyHoldTicks;
     static int modeMenuTicks;
+    static int previewHoldTicks;
+    private static List<BlockPos> previewTargets = List.of();
+    private static ItemStack previewItem = ItemStack.EMPTY;
 
     private VeinMinerPlusClient() {
     }
@@ -69,6 +80,7 @@ public final class VeinMinerPlusClient {
     @SubscribeEvent
     public static void registerKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(CHAIN_KEY);
+        event.register(BLACKLIST_KEY);
         event.register(MODE_UP_KEY);
         event.register(MODE_DOWN_KEY);
     }
@@ -82,6 +94,9 @@ public final class VeinMinerPlusClient {
         keyStateSent = false;
         modeKeyHoldTicks = 0;
         modeMenuTicks = 0;
+        previewTargets = List.of();
+        previewItem = ItemStack.EMPTY;
+        previewHoldTicks = 0;
     }
 
     static void syncKeyState() {
@@ -168,6 +183,22 @@ public final class VeinMinerPlusClient {
         }
     }
 
+    // Sneak + blacklist key toggles the aimed block in the shared blacklist. The server
+    // revalidates permission, the sneak posture and the distance before it changes anything.
+    static void toggleBlacklist() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.screen != null || !minecraft.player.isShiftKeyDown()) {
+            return;
+        }
+
+        if (minecraft.hitResult instanceof BlockHitResult hit) {
+            NetworkHandler.sendBlacklistToggle(hit.getBlockPos());
+        } else {
+            minecraft.player.displayClientMessage(
+                    Component.translatable("message.veinminerplus.blacklist.no_target"), true);
+        }
+    }
+
     // Outlines the positions the interaction mode would touch. The list comes from the same
     // helper the server job uses, so the preview cannot disagree with what actually happens.
     static void renderInteractPreview(RenderLevelStageEvent event) {
@@ -177,14 +208,12 @@ public final class VeinMinerPlusClient {
         }
 
         Minecraft minecraft = Minecraft.getInstance();
-        if (!isChainKeyActive(minecraft) || !(minecraft.hitResult instanceof BlockHitResult hit)) {
+        if (!isChainKeyActive(minecraft)) {
             return;
         }
 
-        List<BlockPos> targets = new ArrayList<>();
-        if (!ChainEvents.collectInteractTargets(minecraft.level, hit.getBlockPos(),
-                minecraft.player.getMainHandItem(), ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
-                || targets.isEmpty()) {
+        List<BlockPos> targets = resolvePreviewTargets(minecraft);
+        if (targets.isEmpty()) {
             return;
         }
 
@@ -199,6 +228,28 @@ public final class VeinMinerPlusClient {
         }
         poseStack.popPose();
         buffers.endBatch(RenderType.lines());
+    }
+
+    // The outline follows the crosshair and is recomputed every frame. While the player moves the
+    // aimed block can fall out of the valid set for single frames, so the last valid preview is
+    // held briefly instead of blinking off; a fresh valid aim replaces it immediately.
+    private static List<BlockPos> resolvePreviewTargets(Minecraft minecraft) {
+        if (minecraft.level != null && minecraft.hitResult instanceof BlockHitResult hit) {
+            List<BlockPos> targets = new ArrayList<>();
+            if (ChainEvents.collectInteractTargets(minecraft.level, hit.getBlockPos(),
+                    minecraft.player.getMainHandItem(), ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
+                    && !targets.isEmpty()) {
+                previewTargets = targets;
+                previewItem = minecraft.player.getMainHandItem().copy();
+                previewHoldTicks = PREVIEW_HOLD_TICKS;
+                return targets;
+            }
+        }
+        if (previewHoldTicks > 0
+                && ItemStack.isSameItemSameTags(previewItem, minecraft.player.getMainHandItem())) {
+            return previewTargets;
+        }
+        return List.of();
     }
 
     private static boolean isChainKeyActive(Minecraft minecraft) {

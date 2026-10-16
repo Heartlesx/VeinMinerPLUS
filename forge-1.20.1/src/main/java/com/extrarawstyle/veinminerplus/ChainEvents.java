@@ -33,8 +33,6 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.AxeItem;
-import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Ingredient;
@@ -55,6 +53,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.ToolActions;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.TagsUpdatedEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
@@ -109,6 +108,13 @@ public final class ChainEvents {
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
     private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
+
+    @SubscribeEvent
+    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            NetworkHandler.sendBlacklistSync(player);
+        }
+    }
 
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
@@ -268,13 +274,23 @@ public final class ChainEvents {
     static boolean collectInteractTargets(Level level, BlockPos origin, ItemStack stack, int limit,
             List<BlockPos> targets) {
         BlockState originState = level.getBlockState(origin);
-        if (isHarvestable(originState)) {
-            spreadSquare(level, origin, limit, targets,
-                    pos -> isHarvestable(level.getBlockState(pos)));
+        if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
+            spreadSquare(level, origin, limit, targets, pos -> {
+                BlockState state = level.getBlockState(pos);
+                return isHarvestable(state) && !BlockBlacklist.contains(state);
+            });
             return true;
         }
-        if (stack.getItem() instanceof HoeItem) {
+        // The Forge tool action, not `instanceof HoeItem`, for the same reason as the axe check
+        // below: modded multi-tools may hoe without extending the vanilla class.
+        if (stack.canPerformAction(ToolActions.HOE_TILL)) {
             spreadSquare(level, origin, limit, targets, pos -> isTillable(level, pos));
+            return true;
+        }
+        // Shovels flatten grass and dirt into paths. The origin must itself be flattenable, so a
+        // shovel aimed at gravel or sand does not silently flatten the lawn around it.
+        if (stack.canPerformAction(ToolActions.SHOVEL_FLATTEN) && isFlattenable(level, origin)) {
+            spreadSquare(level, origin, limit, targets, pos -> isFlattenable(level, pos));
             return true;
         }
         if (stack.getItem() instanceof ItemNameBlockItem) {
@@ -299,7 +315,9 @@ public final class ChainEvents {
         if (stack.isEmpty()) {
             return false;
         }
-        if (stack.getItem() instanceof AxeItem) {
+        // The Forge tool action, not `instanceof AxeItem`: multi-tools such as Mekanism's paxel
+        // strip logs without extending AxeItem.
+        if (stack.canPerformAction(ToolActions.AXE_STRIP)) {
             return state.is(BlockTags.LOGS);
         }
         return matchesItemApplication(level, state, stack);
@@ -362,6 +380,13 @@ public final class ChainEvents {
     // Selection is deliberately a little looser than vanilla: useOn is still the final gate when
     // the job runs, so a position vanilla would refuse is simply skipped.
     private static boolean isTillable(Level level, BlockPos pos) {
+        return level.getBlockState(pos).is(BlockTags.DIRT) && level.getBlockState(pos.above()).isAir();
+    }
+
+    // Vanilla's flatten table is not public on this version, so the closest public signal is used:
+    // the DIRT tag (a superset that also holds moss_block; the vanilla useOn gate inside
+    // interactOne skips the extras). Same trade-off as isTillable next door.
+    private static boolean isFlattenable(Level level, BlockPos pos) {
         return level.getBlockState(pos).is(BlockTags.DIRT) && level.getBlockState(pos.above()).isAir();
     }
 
@@ -448,14 +473,14 @@ public final class ChainEvents {
 
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
-        if (state.isAir() || !level.mayInteract(player, pos)
+        if (BlockBlacklist.contains(state) || state.isAir() || !level.mayInteract(player, pos)
                 || isUnbreakable(player, level, pos, state)) {
             return false;
         }
 
         boolean matches = switch (mode) {
             case BLAST_ANY -> true;
-            case BLAST_ORES -> isOre(state);
+            case BLAST_ORES, EXTREME_BLAST_ORES -> isOre(state);
             case BLAST_LOGS -> state.is(BlockTags.LOGS);
             default -> state.getBlock() == targetBlock;
         };
@@ -750,7 +775,7 @@ public final class ChainEvents {
     private static boolean interactOne(ServerLevel level, ServerPlayer player, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         if (isHarvestable(state)) {
-            return harvestOne(level, player, pos, state);
+            return !BlockBlacklist.contains(state) && harvestOne(level, player, pos, state);
         }
 
         ItemStack stack = player.getMainHandItem();
@@ -891,7 +916,10 @@ public final class ChainEvents {
                     ? BLAST_OFFSETS.computeIfAbsent(Config.BLAST_SEARCH_DISTANCE.get(), ChainEvents::createBlastOffsets)
                     : NORMAL_OFFSETS;
             BlockState targetState = targetBlock.defaultBlockState();
-            this.sparseBlast = mode == ChainMode.BLAST_ORES
+            // An extreme blast always scans by chunk: one palette pass beats the graph's
+            // per-node offset walks for every block type, not just the scattered veins.
+            this.sparseBlast = mode.isExtremeBlast()
+                    || mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
                     || mode == ChainMode.BLAST_SAME && (isOre(targetState) || targetState.is(BlockTags.LOGS));
             this.sparseTargets = new PriorityQueue<>(Comparator
@@ -1028,14 +1056,17 @@ public final class ChainEvents {
         }
 
         private void tickSparseBlast() {
+            boolean extreme = mode.isExtremeBlast();
             int breaks = 0;
             int scannedCenters = 0;
-            int breakLimit = effectiveBlastBreakLimit();
+            // An extreme blast is deliberately unthrottled: the whole chain finishes inside this tick.
+            int breakLimit = extreme ? Integer.MAX_VALUE : effectiveBlastBreakLimit();
             // While targets are queued no scanning happens, so a finished vein can leave a
             // large backlog of centres behind and every one of them would be walked in a
             // single tick. Capping the number walked per tick bounds that worst case; the
             // remainder is simply handled on the following ticks.
-            int centerLimit = Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
+            int centerLimit = extreme ? Integer.MAX_VALUE
+                    : Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
             while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUUID())) {
                 while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
                     scanSparseCenter(sparseCenters.removeFirst());
@@ -1066,7 +1097,8 @@ public final class ChainEvents {
         }
 
         private boolean updateTpsSafety() {
-            if (!mode.isBlast()) {
+            // The extreme blasts deliberately run without the TPS guard.
+            if (!mode.isBlast() || mode.isExtremeBlast()) {
                 return true;
             }
 
@@ -1176,8 +1208,11 @@ public final class ChainEvents {
         }
 
         private boolean matchesSparseState(BlockState state) {
+            if (BlockBlacklist.contains(state)) {
+                return false;
+            }
             return switch (mode) {
-                case BLAST_ORES -> isOre(state);
+                case BLAST_ORES, EXTREME_BLAST_ORES -> isOre(state);
                 case BLAST_LOGS -> state.is(BlockTags.LOGS);
                 default -> state.is(targetBlock);
             };
