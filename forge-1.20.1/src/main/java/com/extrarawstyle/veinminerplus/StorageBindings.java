@@ -21,14 +21,18 @@ import net.minecraftforge.items.IItemHandler;
 // is still dropped on the ground.
 public record StorageBindings(String type, BlockTarget target) {
     static final String TYPE_AE2 = "ae2";
+    // Legacy type names from before the generic capability-based binding; new bindings use
+    // TYPE_STORAGE. They stay in TYPES so cards bound earlier still read and describe themselves.
     static final String TYPE_SOPHISTICATED = "sophisticated";
     static final String TYPE_FUNCTIONAL = "functional";
+    static final String TYPE_STORAGE = "storage";
 
     static final StorageBindings EMPTY = new StorageBindings(null, null);
     private static final String KEY = "veinminerplus_bindings";
     // The binding is saved under the key of its type. Every key is read, so a card that was bound back
     // when the card held one binding per type keeps the first target it had instead of losing it.
-    private static final List<String> TYPES = List.of(TYPE_AE2, TYPE_SOPHISTICATED, TYPE_FUNCTIONAL);
+    private static final List<String> TYPES = List.of(TYPE_AE2, TYPE_SOPHISTICATED, TYPE_FUNCTIONAL,
+            TYPE_STORAGE);
     private static final String CURIOS_MOD_ID = "curios";
 
     // A target is remembered by dimension and position, so it survives a logout or a restart. A

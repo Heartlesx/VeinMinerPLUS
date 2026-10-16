@@ -24,6 +24,8 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
+import net.minecraftforge.client.settings.KeyConflictContext;
+import net.minecraftforge.client.settings.KeyModifier;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -34,9 +36,32 @@ public final class VeinMinerPlusClient {
             InputConstants.Type.KEYSYM,
             GLFW.GLFW_KEY_GRAVE_ACCENT,
             "key.categories.veinminerplus");
+    // Shift + arrow keys switch modes on their own, without the chain key. Both are
+    // rebindable, and the shift part belongs to the binding instead of a hardcoded check.
+    static final KeyMapping MODE_UP_KEY = new KeyMapping(
+            "key.veinminerplus.mode_up",
+            KeyConflictContext.IN_GAME,
+            KeyModifier.SHIFT,
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_UP,
+            "key.categories.veinminerplus");
+    static final KeyMapping MODE_DOWN_KEY = new KeyMapping(
+            "key.veinminerplus.mode_down",
+            KeyConflictContext.IN_GAME,
+            KeyModifier.SHIFT,
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_DOWN,
+            "key.categories.veinminerplus");
+
+    // A held mode key steps every 0.5 s; the OS repeat rate would race through the list.
+    private static final int MODE_REPEAT_TICKS = 10;
+    // The full mode list lingers for 0.5 s after the latest switch.
+    private static final int MODE_MENU_LINGER_TICKS = 10;
 
     static ChainMode clientMode = ChainMode.NORMAL;
     private static boolean keyStateSent;
+    static int modeKeyHoldTicks;
+    static int modeMenuTicks;
 
     private VeinMinerPlusClient() {
     }
@@ -44,6 +69,8 @@ public final class VeinMinerPlusClient {
     @SubscribeEvent
     public static void registerKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(CHAIN_KEY);
+        event.register(MODE_UP_KEY);
+        event.register(MODE_DOWN_KEY);
     }
 
     static void openConfigScreen(NetworkHandler.ConfigSnapshotPayload config) {
@@ -53,10 +80,12 @@ public final class VeinMinerPlusClient {
     static void resetSessionState() {
         clientMode = ChainMode.NORMAL;
         keyStateSent = false;
+        modeKeyHoldTicks = 0;
+        modeMenuTicks = 0;
     }
 
     static void syncKeyState() {
-        boolean held = isChainKeyActive(Minecraft.getInstance()) && !Screen.hasShiftDown();
+        boolean held = isChainKeyActive(Minecraft.getInstance()) && !isSelectorModifierHeld();
         if (held == keyStateSent) {
             return;
         }
@@ -74,20 +103,68 @@ public final class VeinMinerPlusClient {
         keyStateSent = false;
     }
 
+    // The wheel selector's gate is "chain key held + Shift". When the player binds the chain key
+    // to a Shift key itself, that gate would be open all the time, so the selector gives way to
+    // chaining and the wheel is left alone.
+    private static boolean isSelectorModifierHeld() {
+        return Screen.hasShiftDown() && !KeyModifier.SHIFT.matches(CHAIN_KEY.getKey());
+    }
+
     static boolean isModeSelectorOpen() {
-        return isChainKeyActive(Minecraft.getInstance()) && Screen.hasShiftDown();
+        return isChainKeyActive(Minecraft.getInstance()) && isSelectorModifierHeld();
     }
 
     static void renderModeMenu(GuiGraphics graphics) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (!isChainKeyActive(minecraft)) {
+        if (minecraft.player == null || minecraft.screen != null) {
             return;
         }
 
-        if (Screen.hasShiftDown()) {
+        // An open selector or a fresh switch shows the full list; the chain key alone shows
+        // the current-mode banner.
+        if (isModeSelectorOpen() || modeMenuTicks > 0) {
             renderAllModes(graphics, minecraft);
-        } else {
+        } else if (isChainKeyActive(minecraft)) {
             renderCurrentMode(graphics, minecraft);
+        }
+    }
+
+    // The key path shows the full list for a moment after each switch; the wheel path
+    // keeps its own selector, which stays open while the chain key and shift are held.
+    static void switchMode(int direction) {
+        clientMode = ChainMode.cycle(clientMode, direction);
+        NetworkHandler.sendModeChange(clientMode);
+        modeMenuTicks = MODE_MENU_LINGER_TICKS;
+    }
+
+    static void tickModeKeys() {
+        if (modeMenuTicks > 0) {
+            modeMenuTicks--;
+        }
+
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.screen != null) {
+            modeKeyHoldTicks = 0;
+            return;
+        }
+
+        int direction = 0;
+        if (MODE_UP_KEY.isDown()) {
+            direction--;
+        }
+        if (MODE_DOWN_KEY.isDown()) {
+            direction++;
+        }
+
+        if (direction == 0) {
+            modeKeyHoldTicks = 0;
+            return;
+        }
+
+        modeKeyHoldTicks++;
+        if (modeKeyHoldTicks >= MODE_REPEAT_TICKS) {
+            modeKeyHoldTicks = 0;
+            switchMode(direction);
         }
     }
 

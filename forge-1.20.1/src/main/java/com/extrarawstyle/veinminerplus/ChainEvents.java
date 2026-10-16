@@ -18,6 +18,7 @@ import java.util.function.Predicate;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.NonNullList;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -33,10 +34,12 @@ import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.AxeItem;
-import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.HoeItem;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
@@ -66,7 +69,6 @@ public final class ChainEvents {
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
     private static final int SPARSE_SCANS_PER_TICK = 256;
-    private static final int BLOCK_BREAKS_PER_TICK = 8;
     private static final int PENDING_SEED_LIMIT = 256;
     // The interaction mode grows a square outward from the clicked block, one ring per step,
     // and only keeps positions the held item could actually be used on. Vanilla's useOn stays
@@ -282,7 +284,7 @@ public final class ChainEvents {
         // An axe strips logs, and Create applies its own recipes to the clicked block; both work on
         // the block the player aimed at, so its neighbours of the same kind are collected. Anything
         // the held item does not apply to is skipped by the vanilla gate inside interactOne.
-        if (isAppliedToBlock(stack, originState)) {
+        if (isAppliedToBlock(level, stack, originState)) {
             Block originBlock = originState.getBlock();
             spreadSquare(level, origin, limit, targets, pos -> level.getBlockState(pos).is(originBlock));
             return true;
@@ -290,18 +292,46 @@ public final class ChainEvents {
         return false;
     }
 
-    // An axe is applied to logs. Create runs its item application through the interact event instead
-    // of useOn, so anything from that mod is offered to the block that was clicked. Items that place
-    // blocks are left out on purpose: chaining them would build a wall.
-    private static boolean isAppliedToBlock(ItemStack stack, BlockState state) {
-        if (stack.isEmpty() || stack.getItem() instanceof BlockItem) {
+    // An axe is applied to logs. Create's item application is recipe driven: the loaded recipe list
+    // is the authority for which item applies to which block, so vanilla materials (copper ingots),
+    // addon materials and datapack additions all work without a per-mod item list.
+    private static boolean isAppliedToBlock(Level level, ItemStack stack, BlockState state) {
+        if (stack.isEmpty()) {
             return false;
         }
         if (stack.getItem() instanceof AxeItem) {
             return state.is(BlockTags.LOGS);
         }
-        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-        return id != null && "create".equals(id.getNamespace());
+        return matchesItemApplication(level, state, stack);
+    }
+
+    private static final ResourceLocation ITEM_APPLICATION_TYPE =
+            ResourceLocation.fromNamespaceAndPath("create", "item_application");
+
+    // Item application recipes read as [processed block, applied item], matched against the aimed
+    // block's item form and the held stack, the same way Create's own deployer input is built. Both
+    // sides hold the full synced recipe list, so the client preview agrees with the server.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static boolean matchesItemApplication(Level level, BlockState state, ItemStack held) {
+        RecipeType<?> type = BuiltInRegistries.RECIPE_TYPE.get(ITEM_APPLICATION_TYPE);
+        if (type == null) {
+            return false;
+        }
+        ItemStack blockItem = new ItemStack(state.getBlock().asItem());
+        if (blockItem.isEmpty()) {
+            return false;
+        }
+
+        List<Recipe<?>> recipes = (List) level.getRecipeManager().getAllRecipesFor((RecipeType) type);
+        for (Recipe<?> recipe : recipes) {
+            NonNullList<Ingredient> ingredients = recipe.getIngredients();
+            if (ingredients.size() >= 2
+                    && ingredients.get(0).test(blockItem)
+                    && ingredients.get(1).test(held)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Grows a square outward from the origin, one ring per step. Stops at the limit, at the
@@ -419,7 +449,7 @@ public final class ChainEvents {
     private static boolean isEligible(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state,
             Block targetBlock, ChainMode mode) {
         if (state.isAir() || !level.mayInteract(player, pos)
-                || !isAllthemodiumBlock(state) && state.getDestroySpeed(level, pos) < 0.0F) {
+                || isUnbreakable(player, level, pos, state)) {
             return false;
         }
 
@@ -460,12 +490,20 @@ public final class ChainEvents {
         return id != null && id.getPath().endsWith("_ore");
     }
 
-    // Allthemodium registers its ore and ancient stone sets with a negative destroy
-    // speed while overriding getDestroyProgress, so players can still mine them.
-    // Reading that negative value as "unbreakable" would keep them out of chains.
-    private static boolean isAllthemodiumBlock(BlockState state) {
-        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
-        return id != null && "allthemodium".equals(id.getNamespace());
+    // A negative destroy speed is vanilla's "unbreakable" marker (bedrock and friends). Some mods
+    // register mineable blocks that way while overriding getDestroyProgress, so the marker alone
+    // is not the answer: a block counts as unbreakable only when the player cannot make progress
+    // on it right now and no tool tag claims it is mineable.
+    private static boolean isUnbreakable(ServerPlayer player, ServerLevel level, BlockPos pos,
+            BlockState state) {
+        if (state.getDestroySpeed(level, pos) >= 0.0F) {
+            return false;
+        }
+        if (state.getDestroyProgress(player, level, pos) > 0.0F) {
+            return false;
+        }
+        return !state.is(BlockTags.MINEABLE_WITH_PICKAXE) && !state.is(BlockTags.MINEABLE_WITH_AXE)
+                && !state.is(BlockTags.MINEABLE_WITH_SHOVEL) && !state.is(BlockTags.MINEABLE_WITH_HOE);
     }
 
     // Every caller has already run isEligible on this exact state; doing it again here would
@@ -503,8 +541,8 @@ public final class ChainEvents {
     // therefore broken directly, without the event. The manual hit still goes through
     // the normal path, so JDT's own hammer behaviour is untouched.
     private static boolean isJustDireThingsTool(ServerPlayer player) {
-        return player.getMainHandItem().getItem().getClass().getName()
-                .startsWith("com.direwolf20.justdirethings.");
+        ResourceLocation id = BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem());
+        return id != null && "justdirethings".equals(id.getNamespace());
     }
 
     // Mirrors ServerPlayerGameMode.destroyBlock aside from the BreakEvent.
@@ -906,12 +944,8 @@ public final class ChainEvents {
             int checks = 0;
             int breaks = 0;
             int checkLimit = mode.isBlast() ? effectiveBlastSearchChecks() : SEARCH_CHECKS_PER_TICK;
-            int breakLimit = mode.isBlast() ? Config.MAX_BLAST_BLOCKS_PER_TICK.get()
-                    : mode == ChainMode.NORMAL ? Config.MAX_NORMAL_BLOCKS_PER_TICK.get()
-                    : BLOCK_BREAKS_PER_TICK;
-            if (mode.isBlast()) {
-                breakLimit = effectiveBlastBreakLimit();
-            }
+            int breakLimit = mode.isBlast() ? effectiveBlastBreakLimit()
+                    : Config.MAX_NORMAL_BLOCKS_PER_TICK.get();
             while (checks < checkLimit && breaks < breakLimit
                     && !frontier.isEmpty() && brokenCount < totalLimit
                     && HELD_KEYS.contains(player.getUUID())) {
@@ -956,7 +990,9 @@ public final class ChainEvents {
             int size = mode == ChainMode.AREA_1X1 ? 1 : 3;
             int planeSize = size * size;
             int breaks = 0;
-            while (breaks < BLOCK_BREAKS_PER_TICK && areaDepth <= areaDepthLimit
+            // Area modes share the normal per-tick budget on purpose: one knob tunes both speeds.
+            int breakLimit = Config.MAX_NORMAL_BLOCKS_PER_TICK.get();
+            while (breaks < breakLimit && areaDepth <= areaDepthLimit
                     && HELD_KEYS.contains(player.getUUID())) {
                 if (areaIndex >= planeSize) {
                     areaDepth++;

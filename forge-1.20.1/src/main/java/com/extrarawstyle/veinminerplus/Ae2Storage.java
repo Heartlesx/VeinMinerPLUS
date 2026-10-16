@@ -18,6 +18,9 @@ import net.minecraft.world.level.Level;
 // Everything that touches AE2 classes lives in this one class, so the rest of the mod still loads
 // when AE2 is not installed.
 final class Ae2Storage {
+    // Compile-time constant, so referencing it does not load any AE2 class.
+    static final String MOD_ID = "ae2";
+
     private Ae2Storage() {
     }
 
@@ -25,6 +28,14 @@ final class Ae2Storage {
     // be bound to the network slot.
     static boolean canBind(Level level, BlockPos pos) {
         return gridAt(level, pos) != null;
+    }
+
+    // True when the block is built to host a grid node (cable, machine, ...), whether or not an
+    // exposed node exists right now. This is how an unconnected AE2 block reports itself. The
+    // 1.20.1 AE2 api jar does not expose the grid host capability constant, so the api helper
+    // that wraps it is used instead.
+    static boolean canHostGrid(Level level, BlockPos pos) {
+        return GridHelper.getNodeHost(level, pos) != null;
     }
 
     // Resolves the network once and hands back a sink that keeps inserting into it for the rest of

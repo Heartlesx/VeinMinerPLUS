@@ -82,24 +82,28 @@ public final class VeinMinerConfigScreen extends Screen {
     }
 
     private void reset() {
-        maxNormalBlocks.setValue("1024");
-        maxNormalBlocksPerTick.setValue("8");
-        maxBlastBlocks.setValue("32767");
-        maxBlastBlocksPerTick.setValue("64");
-        blastSearchDistance.setValue("20");
-        noHungerCost = false;
+        maxNormalBlocks.setValue(Integer.toString(Config.DEFAULT_MAX_NORMAL_BLOCKS));
+        maxNormalBlocksPerTick.setValue(Integer.toString(Config.DEFAULT_MAX_NORMAL_BLOCKS_PER_TICK));
+        maxBlastBlocks.setValue(Integer.toString(Config.DEFAULT_MAX_BLAST_BLOCKS));
+        maxBlastBlocksPerTick.setValue(Integer.toString(Config.DEFAULT_MAX_BLAST_BLOCKS_PER_TICK));
+        blastSearchDistance.setValue(Integer.toString(Config.DEFAULT_BLAST_SEARCH_DISTANCE));
+        noHungerCost = Config.DEFAULT_NO_HUNGER_COST;
         noHungerCostButton.setMessage(noHungerText());
-        storageBinding = true;
+        storageBinding = Config.DEFAULT_STORAGE_BINDING;
         storageBindingButton.setMessage(storageBindingText());
         error = null;
     }
 
     private void save() {
-        Integer maxNormal = parse(maxNormalBlocks, 32, 32767);
-        Integer normalPerTick = parse(maxNormalBlocksPerTick, 1, 384);
-        Integer maxBlast = parse(maxBlastBlocks, 32, 32767);
-        Integer blastPerTick = parse(maxBlastBlocksPerTick, 1, 512);
-        Integer distance = parse(blastSearchDistance, 3, 128);
+        Integer maxNormal = parse(maxNormalBlocks, Config.MIN_MAX_NORMAL_BLOCKS,
+                Config.MAX_MAX_NORMAL_BLOCKS);
+        Integer normalPerTick = parse(maxNormalBlocksPerTick, Config.MIN_MAX_NORMAL_BLOCKS_PER_TICK,
+                Config.MAX_MAX_NORMAL_BLOCKS_PER_TICK);
+        Integer maxBlast = parse(maxBlastBlocks, Config.MIN_MAX_BLAST_BLOCKS, Config.MAX_MAX_BLAST_BLOCKS);
+        Integer blastPerTick = parse(maxBlastBlocksPerTick, Config.MIN_MAX_BLAST_BLOCKS_PER_TICK,
+                Config.MAX_MAX_BLAST_BLOCKS_PER_TICK);
+        Integer distance = parse(blastSearchDistance, Config.MIN_BLAST_SEARCH_DISTANCE,
+                Config.MAX_BLAST_SEARCH_DISTANCE);
         if (maxNormal == null || normalPerTick == null || maxBlast == null || blastPerTick == null || distance == null) {
             return;
         }

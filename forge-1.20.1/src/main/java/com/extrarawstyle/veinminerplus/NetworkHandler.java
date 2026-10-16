@@ -127,11 +127,16 @@ public final class NetworkHandler {
                 return;
             }
 
-            Config.MAX_NORMAL_BLOCKS.set(Mth.clamp(payload.maxNormalBlocks(), 32, 32767));
-            Config.MAX_NORMAL_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxNormalBlocksPerTick(), 1, 384));
-            Config.MAX_BLAST_BLOCKS.set(Mth.clamp(payload.maxBlastBlocks(), 32, 32767));
-            Config.MAX_BLAST_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxBlastBlocksPerTick(), 1, 512));
-            Config.BLAST_SEARCH_DISTANCE.set(Mth.clamp(payload.blastSearchDistance(), 3, 128));
+            Config.MAX_NORMAL_BLOCKS.set(Mth.clamp(payload.maxNormalBlocks(),
+                    Config.MIN_MAX_NORMAL_BLOCKS, Config.MAX_MAX_NORMAL_BLOCKS));
+            Config.MAX_NORMAL_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxNormalBlocksPerTick(),
+                    Config.MIN_MAX_NORMAL_BLOCKS_PER_TICK, Config.MAX_MAX_NORMAL_BLOCKS_PER_TICK));
+            Config.MAX_BLAST_BLOCKS.set(Mth.clamp(payload.maxBlastBlocks(),
+                    Config.MIN_MAX_BLAST_BLOCKS, Config.MAX_MAX_BLAST_BLOCKS));
+            Config.MAX_BLAST_BLOCKS_PER_TICK.set(Mth.clamp(payload.maxBlastBlocksPerTick(),
+                    Config.MIN_MAX_BLAST_BLOCKS_PER_TICK, Config.MAX_MAX_BLAST_BLOCKS_PER_TICK));
+            Config.BLAST_SEARCH_DISTANCE.set(Mth.clamp(payload.blastSearchDistance(),
+                    Config.MIN_BLAST_SEARCH_DISTANCE, Config.MAX_BLAST_SEARCH_DISTANCE));
             Config.NO_HUNGER_COST.set(payload.noHungerCost());
             Config.STORAGE_BINDING.set(payload.storageBinding());
             Config.SPEC.save();

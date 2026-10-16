@@ -2,6 +2,8 @@ package com.extrarawstyle.veinminerplus;
 
 import org.lwjgl.glfw.GLFW;
 
+import com.mojang.blaze3d.platform.InputConstants;
+import net.minecraft.client.Minecraft;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.InputEvent;
@@ -29,6 +31,22 @@ public final class VeinMinerPlusClientEvents {
 
     @SubscribeEvent
     public static void onKey(InputEvent.Key event) {
+        // Mode switching reacts to the press only; the held repeat is timed in the client
+        // tick because GLFW repeat events fire at the OS rate.
+        if (event.getAction() == GLFW.GLFW_PRESS && Minecraft.getInstance().player != null) {
+            InputConstants.Key pressed = InputConstants.getKey(event.getKey(), event.getScanCode());
+            if (VeinMinerPlusClient.MODE_UP_KEY.isActiveAndMatches(pressed)) {
+                VeinMinerPlusClient.switchMode(-1);
+                VeinMinerPlusClient.modeKeyHoldTicks = 0;
+                return;
+            }
+            if (VeinMinerPlusClient.MODE_DOWN_KEY.isActiveAndMatches(pressed)) {
+                VeinMinerPlusClient.switchMode(1);
+                VeinMinerPlusClient.modeKeyHoldTicks = 0;
+                return;
+            }
+        }
+
         if (!VeinMinerPlusClient.CHAIN_KEY.matches(event.getKey(), event.getScanCode())) {
             return;
         }
@@ -69,6 +87,7 @@ public final class VeinMinerPlusClientEvents {
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
             VeinMinerPlusClient.syncKeyState();
+            VeinMinerPlusClient.tickModeKeys();
         }
     }
 }
