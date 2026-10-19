@@ -12,6 +12,7 @@ import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderGlobal;
+import net.minecraft.client.resources.I18n;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.Entity;
 import net.minecraft.item.ItemStack;
@@ -183,12 +184,6 @@ public final class VeinMinerPlusClient {
         modeMenuTicks = MODE_MENU_LINGER_TICKS;
     }
 
-    static void reportKeyBinding() {
-        VeinMinerPlus.debug("client session start: chainKey='{}' keyCode={} defaultCode={} mode={}",
-                CHAIN_KEY.getKeyDescription(), CHAIN_KEY.getKeyCode(), CHAIN_KEY.getKeyCodeDefault(),
-                clientMode);
-    }
-
     static void syncKeyState() {
         boolean held = isChainKeyActive(Minecraft.getMinecraft()) && !isSelectorModifierHeld();
         if (held == keyStateSent) {
@@ -197,17 +192,6 @@ public final class VeinMinerPlusClient {
 
         NetworkHandler.sendKeyState(held);
         keyStateSent = held;
-        VeinMinerPlus.debug("client key -> held={} bindingDown={} lwjglDown={} keyCode={}", held,
-                CHAIN_KEY.isKeyDown(), Keyboard.isKeyDown(CHAIN_KEY.getKeyCode()), CHAIN_KEY.getKeyCode());
-    }
-
-    static void releaseKeyState() {
-        if (!keyStateSent) {
-            return;
-        }
-
-        NetworkHandler.sendKeyState(false);
-        keyStateSent = false;
     }
 
     // The wheel selector's gate is "chain key held + Shift". When the player binds the chain key to
@@ -297,9 +281,10 @@ public final class VeinMinerPlusClient {
         GlStateManager.disableTexture2D();
         GlStateManager.depthMask(false);
         for (BlockPos pos : targets) {
-            RenderGlobal.drawSelectionBoundingBox(
-                    new AxisAlignedBB(pos).grow(0.002D).offset(-viewX, -viewY, -viewZ),
-                    1.0F, 1.0F, 1.0F, 1.0F);
+            RenderGlobal.drawSelectionBoundingBox(new AxisAlignedBB(
+                    pos.getX() - 0.002D - viewX, pos.getY() - 0.002D - viewY, pos.getZ() - 0.002D - viewZ,
+                    pos.getX() + 1.0D + 0.002D - viewX, pos.getY() + 1.0D + 0.002D - viewY,
+                    pos.getZ() + 1.0D + 0.002D - viewZ), 1.0F, 1.0F, 1.0F, 1.0F);
         }
         GlStateManager.depthMask(true);
         GlStateManager.enableTexture2D();
@@ -310,21 +295,24 @@ public final class VeinMinerPlusClient {
     // aimed block can fall out of the valid set for single frames, so the last valid preview is
     // held briefly instead of blinking off; a fresh valid aim replaces it immediately.
     private static List<BlockPos> resolvePreviewTargets(Minecraft minecraft) {
+        ItemStack held = minecraft.player.getHeldItemMainhand();
         if (minecraft.world != null && minecraft.objectMouseOver != null
                 && minecraft.objectMouseOver.typeOfHit == RayTraceResult.Type.BLOCK) {
             List<BlockPos> targets = new ArrayList<>();
             if (ChainEvents.collectInteractTargets(minecraft.world, minecraft.objectMouseOver.getBlockPos(),
-                    minecraft.player.getHeldItemMainhand(), ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
+                    held, ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
                     && !targets.isEmpty()) {
                 previewTargets = targets;
-                previewItem = minecraft.player.getHeldItemMainhand().copy();
+                if (!sameHeldItem(previewItem, held)) {
+                    previewItem = held.copy();
+                }
                 previewHoldTicks = PREVIEW_HOLD_TICKS;
                 return targets;
             }
         }
         // A changed held item invalidates the last preview: the outline would no longer match what
         // using that item would do.
-        if (previewHoldTicks > 0 && sameHeldItem(previewItem, minecraft.player.getHeldItemMainhand())) {
+        if (previewHoldTicks > 0 && sameHeldItem(previewItem, held)) {
             return previewTargets;
         }
         return Collections.emptyList();
@@ -340,7 +328,7 @@ public final class VeinMinerPlusClient {
     }
 
     private static String modeName(ChainMode mode) {
-        return new TextComponentTranslation(mode.translationKey()).getUnformattedText();
+        return I18n.format(mode.translationKey());
     }
 
     private static void renderCurrentMode(Minecraft minecraft) {
@@ -351,17 +339,19 @@ public final class VeinMinerPlusClient {
     }
 
     private static void renderAllModes(Minecraft minecraft) {
-        ChainMode[] modes = ChainMode.values();
+        ChainMode[] modes = ChainMode.MODES;
+        String[] names = new String[modes.length];
         int width = 0;
-        for (ChainMode mode : modes) {
-            width = Math.max(width, minecraft.fontRenderer.getStringWidth(modeName(mode)));
+        for (int index = 0; index < modes.length; index++) {
+            names[index] = modeName(modes[index]);
+            width = Math.max(width, minecraft.fontRenderer.getStringWidth(names[index]));
         }
 
         int lineHeight = minecraft.fontRenderer.FONT_HEIGHT;
         Gui.drawRect(4, 4, 12 + width, 12 + modes.length * lineHeight, 0xA0000000);
         for (int index = 0; index < modes.length; index++) {
             int color = modes[index] == clientMode ? 0xFFFF55 : 0xFFFFFF;
-            minecraft.fontRenderer.drawStringWithShadow(modeName(modes[index]), 8, 8 + index * lineHeight, color);
+            minecraft.fontRenderer.drawStringWithShadow(names[index], 8, 8 + index * lineHeight, color);
         }
     }
 }

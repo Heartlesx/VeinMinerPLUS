@@ -22,14 +22,16 @@ public enum ChainMode {
         return translationKey;
     }
 
+    // values() clones the array on every call, and these two paths run on every mode switch.
+    static final ChainMode[] MODES = values();
+
     public static ChainMode fromOrdinal(int ordinal) {
-        return ordinal >= 0 && ordinal < values().length ? values()[ordinal] : NORMAL;
+        return ordinal >= 0 && ordinal < MODES.length ? MODES[ordinal] : NORMAL;
     }
 
     public static ChainMode cycle(ChainMode current, int direction) {
-        ChainMode[] modes = values();
-        int next = Math.floorMod(current.ordinal() + direction, modes.length);
-        return modes[next];
+        int next = Math.floorMod(current.ordinal() + direction, MODES.length);
+        return MODES[next];
     }
 
     public boolean isArea() {

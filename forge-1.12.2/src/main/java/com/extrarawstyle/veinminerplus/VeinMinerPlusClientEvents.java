@@ -27,7 +27,6 @@ public final class VeinMinerPlusClientEvents {
     public static void onClientConnected(FMLNetworkEvent.ClientConnectedToServerEvent event) {
         VeinMinerPlusClient.resetSessionState();
         NetworkHandler.sendModeChange(VeinMinerPlusClient.clientMode);
-        VeinMinerPlusClient.reportKeyBinding();
     }
 
     @SubscribeEvent

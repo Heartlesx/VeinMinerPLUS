@@ -92,12 +92,12 @@ public final class ChainEvents {
     private static final List<BlockPos> NORMAL_OFFSETS = createNormalOffsets();
     private static final Map<Integer, List<BlockPos>> BLAST_OFFSETS = new ConcurrentHashMap<>();
     private static final Map<IBlockState, Boolean> ORE_CACHE = new HashMap<>();
-    private static final Map<IBlockState, Boolean> LOG_CACHE = new HashMap<>();
+    // The client preview resolves block states on its own thread while the server fills this cache.
+    private static final Map<IBlockState, Boolean> LOG_CACHE = new ConcurrentHashMap<>();
     private static final Map<UUID, ChainMode> PLAYER_MODES = new HashMap<>();
     private static final Set<UUID> HELD_KEYS = new HashSet<>();
     private static final Map<UUID, ChainJob> ACTIVE_JOBS = new HashMap<>();
     private static final Map<UUID, InteractJob> ACTIVE_INTERACT_JOBS = new HashMap<>();
-    private static final Set<UUID> PENDING_JOBS = new HashSet<>();
     // 1.12.2 runs a task handed to MinecraftServer.addScheduledTask inline when it is called from
     // the server thread, so a job started there still sees the primary block in place and the
     // "was the block actually broken" check rejects every chain. Holding the start until the end
@@ -109,21 +109,6 @@ public final class ChainEvents {
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
-    // TEMPORARY: diagnostics for the 1.12.2 field test. Remove once chaining is confirmed in game.
-    private static final Map<UUID, Integer> TRACED_BREAKS = new HashMap<>();
-    private static final Map<UUID, Integer> TRACED_FAILURES = new HashMap<>();
-    private static final int TRACED_BREAK_LIMIT = 6;
-
-    private static boolean traceOnce(Map<UUID, Integer> counter, EntityPlayerMP player) {
-        UUID id = player.getUniqueID();
-        Integer seen = counter.get(id);
-        int count = seen == null ? 0 : seen;
-        if (count >= TRACED_BREAK_LIMIT) {
-            return false;
-        }
-        counter.put(id, count + 1);
-        return true;
-    }
 
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
@@ -142,14 +127,11 @@ public final class ChainEvents {
         PLAYER_MODES.remove(id);
         ACTIVE_INTERACT_JOBS.remove(id);
         HELD_KEYS.remove(id);
-        PENDING_JOBS.remove(id);
         PENDING_STARTS.remove(id);
         PENDING_SEEDS.remove(id);
         PENDING_DROP_ORIGINS.remove(id);
         PENDING_DOUBLE_PLANTS.remove(id);
         LAST_BREAK_FACES.remove(id);
-        TRACED_BREAKS.remove(id);
-        TRACED_FAILURES.remove(id);
     }
 
     @SubscribeEvent
@@ -183,15 +165,6 @@ public final class ChainEvents {
                 capture.experience += event.getExpToDrop();
                 event.setExpToDrop(0);
             }
-            if (event.getPlayer() instanceof EntityPlayerMP) {
-                EntityPlayerMP rejected = (EntityPlayerMP) event.getPlayer();
-                if (traceBreak(rejected)) {
-                    VeinMinerPlus.debug("break {} rejected: canceled={} keyHeld={} jobActive={} pending={}",
-                            event.getPos(), event.isCanceled(), HELD_KEYS.contains(rejected.getUniqueID()),
-                            ACTIVE_JOBS.containsKey(rejected.getUniqueID()),
-                            PENDING_JOBS.contains(rejected.getUniqueID()));
-                }
-            }
             return;
         }
 
@@ -216,24 +189,18 @@ public final class ChainEvents {
             }
             return;
         }
-        if (PENDING_JOBS.contains(id)) {
+        if (PENDING_STARTS.containsKey(id)) {
             return;
         }
 
         IBlockState state = event.getState();
-        ChainMode mode = PLAYER_MODES.containsKey(id) ? PLAYER_MODES.get(id) : ChainMode.NORMAL;
-        if (mode.isInteraction() || !isEligible(level, player, target, state, state, mode)) {
-            if (traceBreak(player)) {
-                VeinMinerPlus.debug("break {} rejected: mode={} interaction={} reason={} block={}",
-                        target, mode, mode.isInteraction(),
-                        eligibilityFailure(level, player, target, state, state, mode),
-                        state.getBlock().getRegistryName());
-            }
-            return;
+        ChainMode mode = PLAYER_MODES.get(id);
+        if (mode == null) {
+            mode = ChainMode.NORMAL;
         }
-        if (traceBreak(player)) {
-            VeinMinerPlus.debug("break {} accepted: mode={} block={} creative={}", target, mode,
-                    state.getBlock().getRegistryName(), player.isCreative());
+        if (mode.isInteraction() || !isEligible(level, player, target, state, state.getBlock(),
+                state.getBlock().damageDropped(state), mode)) {
+            return;
         }
 
         BreakFace breakFace = LAST_BREAK_FACES.get(id);
@@ -252,7 +219,6 @@ public final class ChainEvents {
         PENDING_DROPS.put(id, drops);
         PENDING_DROP_ORIGINS.put(id, target);
         PENDING_DOUBLE_PLANTS.put(id, state.getBlock() instanceof BlockDoublePlant);
-        PENDING_JOBS.add(id);
         PENDING_SEEDS.put(id, pendingSeeds);
         PENDING_STARTS.put(id, new PendingStart(level, player, target, state, face, mode, drops, pendingSeeds));
     }
@@ -358,7 +324,10 @@ public final class ChainEvents {
         }
 
         UUID id = player.getUniqueID();
-        ChainMode mode = PLAYER_MODES.containsKey(id) ? PLAYER_MODES.get(id) : ChainMode.NORMAL;
+        ChainMode mode = PLAYER_MODES.get(id);
+        if (mode == null) {
+            mode = ChainMode.NORMAL;
+        }
         if (!HELD_KEYS.contains(id)
                 || mode != ChainMode.SPECIAL_INTERACT
                 || ACTIVE_INTERACT_JOBS.containsKey(id)
@@ -370,10 +339,6 @@ public final class ChainEvents {
         List<BlockPos> targets = new ArrayList<>();
         boolean handled = collectInteractTargets(level, event.getPos(), player.getHeldItemMainhand(),
                 INTERACT_BLOCK_LIMIT, targets);
-        // TEMPORARY: this mode has no other way to show which gate stopped it. Remove with the rest
-        // of the diagnostics once the interaction mode has been confirmed in game.
-        VeinMinerPlus.debug("interact click at {} item={} handled={} targets={}", event.getPos(),
-                player.getHeldItemMainhand().getItem().getRegistryName(), handled, targets.size());
         if (!handled || targets.isEmpty()) {
             return;
         }
@@ -388,9 +353,10 @@ public final class ChainEvents {
             List<BlockPos> targets) {
         IBlockState originState = level.getBlockState(origin);
         if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
-            spreadSquare(level, origin, limit, targets,
-                    pos -> isHarvestable(level.getBlockState(pos))
-                            && !BlockBlacklist.contains(level.getBlockState(pos)));
+            spreadSquare(level, origin, limit, targets, pos -> {
+                IBlockState state = level.getBlockState(pos);
+                return isHarvestable(state) && !BlockBlacklist.contains(state);
+            });
             return true;
         }
         Item item = stack.getItem();
@@ -443,10 +409,11 @@ public final class ChainEvents {
         for (int radius = 0; radius <= INTERACT_MAX_RADIUS && targets.size() < limit; radius++) {
             boolean found = false;
             for (int dx = -radius; dx <= radius && targets.size() < limit; dx++) {
-                for (int dz = -radius; dz <= radius && targets.size() < limit; dz++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
-                        continue;
-                    }
+                // The top and bottom rows of a ring hold every column; the rows between them hold
+                // only their two edge cells. Walking just those cells visits the same positions in
+                // the same order without stepping over the interior of the square.
+                int step = dx == -radius || dx == radius ? 1 : radius * 2;
+                for (int dz = -radius; dz <= radius && targets.size() < limit; dz += step) {
                     BlockPos pos = new BlockPos(origin.getX() + dx, y, origin.getZ() + dz);
                     if (level.isValid(pos) && valid.test(pos)) {
                         targets.add(pos);
@@ -509,11 +476,15 @@ public final class ChainEvents {
             return;
         }
         startPendingJobs();
-        for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
-            job.tick();
+        if (!ACTIVE_JOBS.isEmpty()) {
+            for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
+                job.tick();
+            }
         }
-        for (InteractJob job : new ArrayList<>(ACTIVE_INTERACT_JOBS.values())) {
-            job.tick();
+        if (!ACTIVE_INTERACT_JOBS.isEmpty()) {
+            for (InteractJob job : new ArrayList<>(ACTIVE_INTERACT_JOBS.values())) {
+                job.tick();
+            }
         }
     }
 
@@ -538,8 +509,6 @@ public final class ChainEvents {
         } else {
             HELD_KEYS.remove(player.getUniqueID());
         }
-        VeinMinerPlus.debug("server key state: player={} held={} heldSet={}", player.getName(), held,
-                HELD_KEYS.contains(player.getUniqueID()));
     }
 
     static void setMode(EntityPlayer player, int ordinal) {
@@ -551,7 +520,6 @@ public final class ChainEvents {
     private static void startAfterPrimaryBreak(WorldServer level, EntityPlayerMP player, BlockPos target,
             IBlockState originalState, EnumFacing face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
         UUID id = player.getUniqueID();
-        PENDING_JOBS.remove(id);
         if (PENDING_DROPS.get(id) == drops) {
             PENDING_DROPS.remove(id);
         }
@@ -563,68 +531,16 @@ public final class ChainEvents {
 
         if (!level.isValid(target) || level.getBlockState(target).getBlock() == originalState.getBlock()) {
             drops.clear();
-            VeinMinerPlus.debug("start {} aborted: valid={} blockNow={}", target, level.isValid(target),
-                    level.getBlockState(target).getBlock().getRegistryName());
             return;
         }
 
         if (!HELD_KEYS.contains(id) || ACTIVE_JOBS.containsKey(id) || player.isSpectator()) {
             drops.flush(level, player);
-            VeinMinerPlus.debug("start {} aborted: keyHeld={} jobActive={} spectator={}", target,
-                    HELD_KEYS.contains(id), ACTIVE_JOBS.containsKey(id), player.isSpectator());
             return;
         }
 
         ACTIVE_JOBS.put(id, new ChainJob(level, player, target, originalState, face, mode, drops, seeds));
         showProgress(player, 1);
-        VeinMinerPlus.debug("job started at {} mode={} block={}", target, mode,
-                originalState.getBlock().getRegistryName());
-    }
-
-    // TEMPORARY: diagnostics for the 1.12.2 field test. Remove once chaining is confirmed in game.
-    private static boolean traceBreak(EntityPlayerMP player) {
-        return traceOnce(TRACED_BREAKS, player);
-    }
-
-    // Diagnostic twin of isEligible, reporting which condition refused the block. Kept separate so
-    // the hot path in isEligible still allocates nothing.
-    private static String eligibilityFailure(WorldServer level, EntityPlayerMP player, BlockPos pos,
-            IBlockState state, IBlockState targetState, ChainMode mode) {
-        if (BlockBlacklist.contains(state)) {
-            return "blacklisted";
-        }
-        if (state.getBlock().isAir(state, level, pos)) {
-            return "air";
-        }
-        if (!level.isBlockModifiable(player, pos)) {
-            return "not-modifiable";
-        }
-        if (isUnbreakable(level, player, pos, state)) {
-            return "hardness=" + state.getBlockHardness(level, pos);
-        }
-        boolean matches;
-        switch (mode) {
-            case BLAST_ANY:
-                matches = true;
-                break;
-            case BLAST_ORES:
-            case EXTREME_BLAST_ORES:
-                matches = isOre(state);
-                break;
-            case BLAST_LOGS:
-                matches = isLog(state);
-                break;
-            default:
-                matches = sameKind(targetState, state);
-                break;
-        }
-        if (!matches) {
-            return "mode-mismatch";
-        }
-        if (!player.isCreative() && !ForgeHooks.canHarvestBlock(state.getBlock(), player, level, pos)) {
-            return "cannot-harvest";
-        }
-        return "eligible";
     }
 
     // A negative block hardness is vanilla's "unbreakable" marker (bedrock and friends). Some mods
@@ -645,29 +561,34 @@ public final class ChainEvents {
     }
 
     private static boolean isEligible(WorldServer level, EntityPlayerMP player, BlockPos pos, IBlockState state,
-            IBlockState targetState, ChainMode mode) {
+            Block targetBlock, int targetVariant, ChainMode mode) {
+        // Most candidates in a search do not match the mode at all, so the cheap test runs before
+        // the modifiable and hardness checks, which are the expensive ones.
+        if (!matchesMode(mode, targetBlock, targetVariant, state)) {
+            return false;
+        }
+
         if (BlockBlacklist.contains(state) || state.getBlock().isAir(state, level, pos)
                 || !level.isBlockModifiable(player, pos) || isUnbreakable(level, player, pos, state)) {
             return false;
         }
 
-        boolean matches;
+        return player.isCreative() || ForgeHooks.canHarvestBlock(state.getBlock(), player, level, pos);
+    }
+
+    // One definition for both the job's eligibility test and the section scan.
+    private static boolean matchesMode(ChainMode mode, Block targetBlock, int targetVariant, IBlockState state) {
         switch (mode) {
             case BLAST_ANY:
-                matches = true;
-                break;
+                return true;
             case BLAST_ORES:
             case EXTREME_BLAST_ORES:
-                matches = isOre(state);
-                break;
+                return isOre(state);
             case BLAST_LOGS:
-                matches = isLog(state);
-                break;
+                return isLog(state);
             default:
-                matches = sameKind(targetState, state);
-                break;
+                return sameKind(targetBlock, targetVariant, state);
         }
-        return matches && (player.isCreative() || ForgeHooks.canHarvestBlock(state.getBlock(), player, level, pos));
     }
 
     // 1.12.2 gives a whole block family one block and packs its variants into the metadata, so
@@ -677,6 +598,12 @@ public final class ChainEvents {
     private static boolean sameKind(IBlockState targetState, IBlockState state) {
         return state.getBlock() == targetState.getBlock()
                 && state.getBlock().damageDropped(state) == targetState.getBlock().damageDropped(targetState);
+    }
+
+    // Same test as sameKind, with the target's block and variant resolved once per job instead of
+    // once per candidate.
+    private static boolean sameKind(Block targetBlock, int targetVariant, IBlockState state) {
+        return state.getBlock() == targetBlock && targetBlock.damageDropped(state) == targetVariant;
     }
 
     // A blast search tests the same handful of states over and over, and the ore dictionary
@@ -783,10 +710,6 @@ public final class ChainEvents {
             if (destroyed && Config.noHungerCost) {
                 player.getFoodStats().foodExhaustionLevel = exhaustion;
             }
-            if (!destroyed && traceOnce(TRACED_FAILURES, player)) {
-                VeinMinerPlus.debug("chained break refused at {} block={}", pos,
-                        state.getBlock().getRegistryName());
-            }
             return destroyed;
         } finally {
             if (previous == null) {
@@ -797,14 +720,20 @@ public final class ChainEvents {
         }
     }
 
-    private static BlockPos areaOffset(BlockPos start, EnumFacing face, int first, int second) {
+    // The hit face points back toward the player, so the depth is taken along the opposite
+    // direction. Combining both offsets into one add keeps this to one position per candidate.
+    private static BlockPos areaCandidate(BlockPos origin, EnumFacing face, EnumFacing opposite,
+            int first, int second, int depth) {
+        int dx = opposite.getXOffset() * depth;
+        int dy = opposite.getYOffset() * depth;
+        int dz = opposite.getZOffset() * depth;
         switch (face.getAxis()) {
             case X:
-                return start.add(0, first, second);
+                return origin.add(dx, first + dy, second + dz);
             case Y:
-                return start.add(first, 0, second);
+                return origin.add(first + dx, dy, second + dz);
             default:
-                return start.add(first, second, 0);
+                return origin.add(first + dx, second + dy, dz);
         }
     }
 
@@ -880,9 +809,6 @@ public final class ChainEvents {
     private static double getServerTps(WorldServer level) {
         MinecraftServer server = level.getMinecraftServer();
         long[] times = server.tickTimeArray;
-        if (times.length == 0) {
-            return 20.0D;
-        }
         long total = 0L;
         for (long time : times) {
             total += time;
@@ -903,7 +829,7 @@ public final class ChainEvents {
         // One bucket per item and tag set, so a drop finds its total in a single lookup.
         // A long chain accumulates thousands of buckets; scanning all of them per drop made every
         // drop cost grow with the number already accumulated.
-        private final Map<StackKey, Long> counts = new HashMap<>();
+        private final Map<StackKey, Counter> counts = new HashMap<>();
         private int experience;
 
         private void add(ItemStack stack) {
@@ -911,8 +837,12 @@ public final class ChainEvents {
                 return;
             }
             StackKey key = new StackKey(stack);
-            Long current = counts.get(key);
-            counts.put(key, current == null ? (long) stack.getCount() : current + stack.getCount());
+            Counter current = counts.get(key);
+            if (current == null) {
+                current = new Counter();
+                counts.put(key, current);
+            }
+            current.value += stack.getCount();
         }
 
         private void addExperience(int amount) {
@@ -937,12 +867,12 @@ public final class ChainEvents {
             double x = player.posX;
             double y = player.posY;
             double z = player.posZ;
-            for (Map.Entry<StackKey, Long> entry : counts.entrySet()) {
+            for (Map.Entry<StackKey, Counter> entry : counts.entrySet()) {
                 // A bucket holds one running total, so it has to be cut back to stack size before
                 // it leaves the buffer.
                 ItemStack template = entry.getKey().template;
                 int maxStackSize = template.getMaxStackSize();
-                long remaining = entry.getValue();
+                long remaining = entry.getValue().value;
                 while (remaining > 0L) {
                     int amount = (int) Math.min(maxStackSize, remaining);
                     remaining -= amount;
@@ -971,6 +901,11 @@ public final class ChainEvents {
         private void clear() {
             counts.clear();
             experience = 0;
+        }
+
+        // A mutable running total, so accumulating a drop does not box a Long.
+        private static final class Counter {
+            private long value;
         }
 
         // Identity of a bucket: the item plus every tag, the same pair the vanilla helper
@@ -1107,8 +1042,7 @@ public final class ChainEvents {
 
             int processed = 0;
             int counted = 0;
-            while (!targets.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK
-                    && HELD_KEYS.contains(player.getUniqueID())) {
+            while (!targets.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK) {
                 processed++;
                 if (interactOne(level, player, targets.poll())) {
                     processedCount++;
@@ -1139,13 +1073,15 @@ public final class ChainEvents {
         private final WorldServer level;
         private final EntityPlayerMP player;
         private final BlockPos origin;
-        private final IBlockState targetState;
+        private final Block targetBlock;
+        private final int targetVariant;
         private final EnumFacing face;
+        private final EnumFacing opposite;
         private final ChainMode mode;
         private final Set<BlockPos> examined = new HashSet<>();
         private final Deque<SearchNode> frontier = new ArrayDeque<>();
         private final Deque<BlockPos> sparseCenters = new ArrayDeque<>();
-        private final PriorityQueue<BlockPos> sparseTargets;
+        private final PriorityQueue<SparseTarget> sparseTargets;
         // Section key -> matching positions inside that 16x16x16 section. Bucketing matters: a
         // chunk column holds up to 16 sections, while a scan sphere only ever reaches a couple
         // of them.
@@ -1162,15 +1098,39 @@ public final class ChainEvents {
         private int areaIndex;
         private int criticalTpsTicks;
         private int tpsWarningCooldown;
-        private int ticks;
+        private double lastTps = 20.0D;
+        private Chunk lastChunk;
+        private int lastChunkX;
+        private int lastChunkZ;
+
+        // Ordering for the sparse queue. The distance is measured from the job's fixed origin, so
+        // it is stored on the entry instead of being recomputed on every comparison.
+        private static final Comparator<SparseTarget> SPARSE_ORDER = new Comparator<SparseTarget>() {
+            @Override
+            public int compare(SparseTarget first, SparseTarget second) {
+                int result = Long.compare(first.distance, second.distance);
+                if (result != 0) {
+                    return result;
+                }
+                result = Integer.compare(first.pos.getY(), second.pos.getY());
+                if (result != 0) {
+                    return result;
+                }
+                result = Integer.compare(first.pos.getX(), second.pos.getX());
+                return result != 0 ? result : Integer.compare(first.pos.getZ(), second.pos.getZ());
+            }
+        };
 
         private ChainJob(WorldServer level, EntityPlayerMP player, BlockPos origin, IBlockState targetState,
                 EnumFacing face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
             this.level = level;
             this.player = player;
             this.origin = origin;
-            this.targetState = targetState;
+            this.targetBlock = targetState.getBlock();
+            this.targetVariant = targetState.getBlock().damageDropped(targetState);
             this.face = face;
+            // The hit face points back toward the player; the area mode advances into the block.
+            this.opposite = face.getOpposite();
             this.mode = mode;
             this.drops = drops;
             this.totalLimit = mode.isBlast() ? Config.maxBlastBlocks : Config.maxNormalBlocks;
@@ -1190,21 +1150,7 @@ public final class ChainEvents {
             this.sparseBlast = mode.isExtremeBlast() || mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
                     || mode == ChainMode.BLAST_SAME && (isOre(targetState) || isLog(targetState));
-            this.sparseTargets = new PriorityQueue<>(new Comparator<BlockPos>() {
-                @Override
-                public int compare(BlockPos first, BlockPos second) {
-                    int result = Long.compare(squaredDistance(origin, first), squaredDistance(origin, second));
-                    if (result != 0) {
-                        return result;
-                    }
-                    result = Integer.compare(first.getY(), second.getY());
-                    if (result != 0) {
-                        return result;
-                    }
-                    result = Integer.compare(first.getX(), second.getX());
-                    return result != 0 ? result : Integer.compare(first.getZ(), second.getZ());
-                }
-            });
+            this.sparseTargets = new PriorityQueue<>(SPARSE_ORDER);
 
             // Every block the player's action broke is a start, so an area that was cleared in one
             // go is entered from its edge instead of from a single block whose neighbours are all
@@ -1230,11 +1176,10 @@ public final class ChainEvents {
         }
 
         private void tick() {
+            // The key state and the player's state can only change between ticks: the packet
+            // handler runs on the server thread at a tick boundary, so one lookup covers the tick.
             if (!HELD_KEYS.contains(player.getUniqueID()) || player.isDead || player.isSpectator()
                     || player.getServerWorld() != level) {
-                VeinMinerPlus.debug("job abandon: keyHeld={} dead={} spectator={} sameWorld={}",
-                        HELD_KEYS.contains(player.getUniqueID()), player.isDead, player.isSpectator(),
-                        player.getServerWorld() == level);
                 finish();
                 return;
             }
@@ -1242,12 +1187,6 @@ public final class ChainEvents {
             if (!updateTpsSafety()) {
                 return;
             }
-
-            if (ticks < 3) {
-                VeinMinerPlus.debug("job tick {}: mode={} frontier={} centers={} targets={} broken={}", ticks,
-                        mode, frontier.size(), sparseCenters.size(), sparseTargets.size(), brokenCount);
-            }
-            ticks++;
 
             if (mode.isArea()) {
                 tickArea();
@@ -1266,8 +1205,7 @@ public final class ChainEvents {
             // normal chains and both area sizes alike.
             int breakLimit = mode.isBlast() ? effectiveBlastBreakLimit() : Config.maxNormalBlocksPerTick;
             while (checks < checkLimit && breaks < breakLimit
-                    && !frontier.isEmpty() && brokenCount < totalLimit
-                    && HELD_KEYS.contains(player.getUniqueID())) {
+                    && !frontier.isEmpty() && brokenCount < totalLimit) {
                 SearchNode node = frontier.removeFirst();
                 int centerChecks = 0;
                 while (centerChecks < SEARCH_CHECKS_PER_CENTER
@@ -1283,8 +1221,8 @@ public final class ChainEvents {
                         continue;
                     }
 
-                    IBlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                    if (isEligible(level, player, candidate, state, targetState, mode)
+                    IBlockState state = getBlockStateForSearch(candidate);
+                    if (isEligible(level, player, candidate, state, targetBlock, targetVariant, mode)
                             && breakOne(level, player, candidate, state)) {
                         brokenCount++;
                         breaks++;
@@ -1296,13 +1234,7 @@ public final class ChainEvents {
                 }
             }
 
-            if (breaks > 0) {
-                showProgress(player, brokenCount);
-            }
-
-            if (!HELD_KEYS.contains(player.getUniqueID()) || frontier.isEmpty() || brokenCount >= totalLimit) {
-                finish();
-            }
+            afterTick(breaks, frontier.isEmpty() || brokenCount >= totalLimit);
         }
 
         private void tickArea() {
@@ -1311,8 +1243,7 @@ public final class ChainEvents {
             int breaks = 0;
             // Area modes share the normal per-tick budget on purpose: one knob tunes both speeds.
             int breakLimit = Config.maxNormalBlocksPerTick;
-            while (breaks < breakLimit && areaDepth <= areaDepthLimit
-                    && HELD_KEYS.contains(player.getUniqueID())) {
+            while (breaks < breakLimit && areaDepth <= areaDepthLimit) {
                 if (areaIndex >= planeSize) {
                     areaDepth++;
                     areaIndex = 0;
@@ -1323,28 +1254,20 @@ public final class ChainEvents {
                 int first = startOffset + areaIndex / size;
                 int second = startOffset + areaIndex % size;
                 areaIndex++;
-                // The hit face points back toward the player. Advance into the block instead.
-                BlockPos candidate = areaOffset(origin, face, first, second)
-                        .offset(face.getOpposite(), areaDepth);
+                BlockPos candidate = areaCandidate(origin, face, opposite, first, second, areaDepth);
                 if (!level.isValid(candidate) || !examined.add(candidate)) {
                     continue;
                 }
 
-                IBlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                if (isEligible(level, player, candidate, state, targetState, mode)
+                IBlockState state = getBlockStateForSearch(candidate);
+                if (isEligible(level, player, candidate, state, targetBlock, targetVariant, mode)
                         && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
                 }
             }
 
-            if (breaks > 0) {
-                showProgress(player, brokenCount);
-            }
-
-            if (!HELD_KEYS.contains(player.getUniqueID()) || areaDepth > areaDepthLimit) {
-                finish();
-            }
+            afterTick(breaks, areaDepth > areaDepthLimit);
         }
 
         private void tickSparseBlast() {
@@ -1359,7 +1282,7 @@ public final class ChainEvents {
             // remainder is simply handled on the following ticks.
             int centerLimit = extreme ? Integer.MAX_VALUE
                     : Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
-            while (breaks < breakLimit && brokenCount < totalLimit && HELD_KEYS.contains(player.getUniqueID())) {
+            while (breaks < breakLimit && brokenCount < totalLimit) {
                 while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
                     scanSparseCenter(sparseCenters.removeFirst());
                     scannedCenters++;
@@ -1368,9 +1291,9 @@ public final class ChainEvents {
                     break;
                 }
 
-                BlockPos candidate = sparseTargets.poll();
-                IBlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
-                if (isEligible(level, player, candidate, state, targetState, mode)
+                BlockPos candidate = sparseTargets.poll().pos;
+                IBlockState state = getBlockStateForSearch(candidate);
+                if (isEligible(level, player, candidate, state, targetBlock, targetVariant, mode)
                         && breakOne(level, player, candidate, state)) {
                     brokenCount++;
                     breaks++;
@@ -1378,12 +1301,15 @@ public final class ChainEvents {
                 }
             }
 
+            afterTick(breaks, sparseTargets.isEmpty() && sparseCenters.isEmpty()
+                    || brokenCount >= totalLimit);
+        }
+
+        private void afterTick(int breaks, boolean exhausted) {
             if (breaks > 0) {
                 showProgress(player, brokenCount);
             }
-            if (!HELD_KEYS.contains(player.getUniqueID())
-                    || sparseTargets.isEmpty() && sparseCenters.isEmpty()
-                    || brokenCount >= totalLimit) {
+            if (exhausted) {
                 finish();
             }
         }
@@ -1399,6 +1325,7 @@ public final class ChainEvents {
             }
 
             double tps = getServerTps(level);
+            lastTps = tps;
             if (tps < TPS_CRITICAL_THRESHOLD) {
                 criticalTpsTicks++;
                 if (criticalTpsTicks == 1) {
@@ -1421,7 +1348,7 @@ public final class ChainEvents {
 
         private int effectiveBlastBreakLimit() {
             int configured = Config.maxBlastBlocksPerTick;
-            double tps = getServerTps(level);
+            double tps = lastTps;
             if (tps < TPS_WARNING_THRESHOLD) {
                 return Math.max(1, configured / 4);
             }
@@ -1432,7 +1359,7 @@ public final class ChainEvents {
         }
 
         private int effectiveBlastSearchChecks() {
-            double tps = getServerTps(level);
+            double tps = lastTps;
             if (tps < TPS_WARNING_THRESHOLD) {
                 return SEARCH_CHECKS_PER_TICK / 4;
             }
@@ -1484,7 +1411,7 @@ public final class ChainEvents {
                             matches.set(index, matches.get(matches.size() - 1));
                             matches.remove(matches.size() - 1);
                             if (examined.add(pos)) {
-                                sparseTargets.add(pos);
+                                sparseTargets.add(new SparseTarget(pos, squaredDistance(origin, pos)));
                             }
                         }
                     }
@@ -1511,6 +1438,26 @@ public final class ChainEvents {
             return matches;
         }
 
+        private IBlockState getBlockStateForSearch(BlockPos pos) {
+            int chunkX = pos.getX() >> 4;
+            int chunkZ = pos.getZ() >> 4;
+            // Candidates are walked in runs inside one chunk, so the last lookup usually answers
+            // the next one too.
+            if (lastChunk != null && chunkX == lastChunkX && chunkZ == lastChunkZ) {
+                return lastChunk.getBlockState(pos);
+            }
+            long key = chunkKey(chunkX, chunkZ);
+            Chunk chunk = loadedChunks.get(key);
+            if (chunk == null) {
+                chunk = level.getChunk(chunkX, chunkZ);
+                loadedChunks.put(key, chunk);
+            }
+            lastChunk = chunk;
+            lastChunkX = chunkX;
+            lastChunkZ = chunkZ;
+            return chunk.getBlockState(pos);
+        }
+
         // Only chunks that are already loaded are walked. Asking the provider for a chunk generates
         // it right inside this tick, and against fresh terrain the scan would keep finding new
         // ground to generate - one tick that never ends. Returns null when the chunk is not
@@ -1529,39 +1476,13 @@ public final class ChainEvents {
         }
 
         private boolean matchesSparseState(IBlockState state) {
-            if (BlockBlacklist.contains(state)) {
-                return false;
-            }
-            switch (mode) {
-                case BLAST_ORES:
-                case EXTREME_BLAST_ORES:
-                    return isOre(state);
-                case BLAST_LOGS:
-                    return isLog(state);
-                default:
-                    return sameKind(targetState, state);
-            }
+            return !BlockBlacklist.contains(state) && matchesMode(mode, targetBlock, targetVariant, state);
         }
 
         private void finish() {
             drops.flush(level, player);
             ACTIVE_JOBS.remove(player.getUniqueID(), this);
-            VeinMinerPlus.debug("job done: mode={} ticks={} brokenCount={} keyHeld={}", mode, ticks, brokenCount,
-                    HELD_KEYS.contains(player.getUniqueID()));
         }
-    }
-
-    private static IBlockState getBlockStateForSearch(WorldServer level, BlockPos pos,
-            Map<Long, Chunk> loadedChunks) {
-        int chunkX = pos.getX() >> 4;
-        int chunkZ = pos.getZ() >> 4;
-        long key = chunkKey(chunkX, chunkZ);
-        Chunk chunk = loadedChunks.get(key);
-        if (chunk == null) {
-            chunk = level.getChunk(chunkX, chunkZ);
-            loadedChunks.put(key, chunk);
-        }
-        return chunk.getBlockState(pos);
     }
 
     private static long chunkKey(BlockPos pos) {
@@ -1590,6 +1511,16 @@ public final class ChainEvents {
         private SearchNode(BlockPos position, int nextOffset) {
             this.position = position;
             this.nextOffset = nextOffset;
+        }
+    }
+
+    private static final class SparseTarget {
+        private final BlockPos pos;
+        private final long distance;
+
+        private SparseTarget(BlockPos pos, long distance) {
+            this.pos = pos;
+            this.distance = distance;
         }
     }
 

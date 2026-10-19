@@ -51,10 +51,6 @@ public final class NetworkHandler {
         channel.sendToServer(new ModeChangeMessage(mode.ordinal()));
     }
 
-    static void requestConfigScreen() {
-        channel.sendToServer(new ConfigRequestMessage());
-    }
-
     static void openConfigScreen(EntityPlayerMP player) {
         channel.sendTo(ConfigSnapshotMessage.current(), player);
     }
