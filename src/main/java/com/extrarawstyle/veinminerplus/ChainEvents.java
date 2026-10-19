@@ -152,10 +152,14 @@ public final class ChainEvents {
         }
     }
 
-    @SubscribeEvent
+    // Another mod may perform the break inside its own listener and cancel the event afterwards
+    // (Useless Mod's multi-tool does exactly this). A cancellation alone does not prove that
+    // nothing was broken, so the resulting block state is the only reliable signal: once the
+    // block is gone the break really happened and the chain can start from it, while a block
+    // that is still in place means a protection or a refusal cancelled the break.
+    @SubscribeEvent(receiveCanceled = true)
     public void onBlockBreak(BlockEvent.BreakEvent event) {
-        if (event.isCanceled()
-                || !(event.getPlayer() instanceof ServerPlayer player)
+        if (!(event.getPlayer() instanceof ServerPlayer player)
                 || !HELD_KEYS.contains(player.getUUID())
                 || ACTIVE_JOBS.containsKey(player.getUUID())
                 || !(event.getLevel() instanceof ServerLevel level)) {
@@ -165,6 +169,9 @@ public final class ChainEvents {
         UUID id = player.getUUID();
         BlockPos target = event.getPos().immutable();
         BlockState state = event.getState();
+        if (event.isCanceled() && level.getBlockState(target).is(state.getBlock())) {
+            return;
+        }
 
         List<BlockPos> seeds = PENDING_SEEDS.get(id);
         if (seeds != null) {
@@ -184,17 +191,28 @@ public final class ChainEvents {
 
         ChainMode mode = PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL);
         if (mode.isInteraction() || !isEligible(level, player, target, state, state.getBlock(), mode, null)) {
+            // onBlockDrops may have captured this break's drops already; they still have to go
+            // somewhere even though no chain starts.
+            discardPendingDrops(level, player);
             return;
         }
 
         BreakFace breakFace = LAST_BREAK_FACES.get(id);
         Direction face = breakFace != null && breakFace.pos().equals(target) ? breakFace.face() : Direction.UP;
-        DropBuffer drops = new DropBuffer();
+        // A drop event may already have created the primary buffer (see onBlockDrops), so keep the
+        // drops it captured instead of starting a fresh one.
+        DropBuffer pending = PENDING_DROPS.get(id);
+        DropBuffer drops;
+        if (pending != null) {
+            drops = pending;
+        } else {
+            drops = new DropBuffer();
+            PENDING_DROPS.put(id, drops);
+            PENDING_DROP_ORIGINS.put(id, target);
+            PENDING_DOUBLE_PLANTS.put(id, state.getBlock() instanceof DoublePlantBlock);
+        }
         List<BlockPos> pendingSeeds = new ArrayList<>();
         pendingSeeds.add(target);
-        PENDING_DROPS.put(id, drops);
-        PENDING_DROP_ORIGINS.put(id, target);
-        PENDING_DOUBLE_PLANTS.put(id, state.getBlock() instanceof DoublePlantBlock);
         PENDING_JOBS.add(id);
         PENDING_SEEDS.put(id, pendingSeeds);
         level.getServer().execute(() -> startAfterPrimaryBreak(level, player, target, state, face, mode, drops,
@@ -209,10 +227,20 @@ public final class ChainEvents {
         }
         DropBuffer drops = null;
         if (event.getBreaker() instanceof ServerPlayer player) {
-            drops = PENDING_DROPS.get(player.getUUID());
+            UUID id = player.getUUID();
+            drops = PENDING_DROPS.get(id);
             if (drops == null) {
-                ChainJob job = ACTIVE_JOBS.get(player.getUUID());
+                ChainJob job = ACTIVE_JOBS.get(id);
                 drops = job == null ? null : job.drops;
+            }
+            if (drops == null && HELD_KEYS.contains(id)) {
+                // Some mods (Useless Mod's multi-tool) break the block inside their own HIGHEST
+                // BreakEvent listener, so this drop event fires before our lower-priority break
+                // handler has created the primary buffer. Create it here; onBlockBreak reuses it.
+                drops = new DropBuffer();
+                PENDING_DROPS.put(id, drops);
+                PENDING_DROP_ORIGINS.put(id, event.getPos().immutable());
+                PENDING_DOUBLE_PLANTS.put(id, event.getState().getBlock() instanceof DoublePlantBlock);
             }
         }
 
@@ -241,6 +269,18 @@ public final class ChainEvents {
         event.getDrops().clear();
         drops.addExperience(event.getDroppedExperience());
         event.setDroppedExperience(0);
+    }
+
+    // Drops captured for a primary break that turned out not to start a chain must not stay in the
+    // buffer: flush them the same way the chain would, then forget the entry.
+    private static void discardPendingDrops(ServerLevel level, ServerPlayer player) {
+        UUID id = player.getUUID();
+        DropBuffer drops = PENDING_DROPS.remove(id);
+        PENDING_DROP_ORIGINS.remove(id);
+        PENDING_DOUBLE_PLANTS.remove(id);
+        if (drops != null) {
+            drops.flush(level, player);
+        }
     }
 
     private static boolean matchesDropPosition(BlockPos dropPosition, BlockPos origin, boolean doublePlant) {
@@ -583,6 +623,11 @@ public final class ChainEvents {
         boolean destroyed = isJustDireThingsTool(player)
                 ? breakWithoutBreakEvent(level, player, pos, state)
                 : player.gameMode.destroyBlock(pos);
+        if (!destroyed && !level.getBlockState(pos).is(state.getBlock())) {
+            // destroyBlock reports failure when another listener cancelled the BreakEvent after
+            // removing the block itself, so the world is the only reliable success signal.
+            destroyed = true;
+        }
         if (destroyed && Config.NO_HUNGER_COST.get()) {
             player.getFoodData().setExhaustion(exhaustion);
         }

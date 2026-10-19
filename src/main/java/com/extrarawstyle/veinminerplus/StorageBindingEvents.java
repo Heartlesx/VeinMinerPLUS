@@ -30,8 +30,9 @@ public final class StorageBindingEvents {
 
         BlockPos pos = event.getPos();
         // Which storage a block is comes from the capabilities it exposes, never from a namespace
-        // list: AE2's grid capability decides the network slot, and any block with an item handler
-        // binds as generic storage. New storage mods therefore work without changes here.
+        // list: AE2's grid capability and Refined Storage's network node capability decide the
+        // network slot, and any block with an item handler binds as generic storage. New storage
+        // mods therefore work without changes here.
         if (ModList.get().isLoaded(Ae2Storage.MOD_ID)) {
             // The mod id is checked before Ae2Storage is touched, so no AE2 class is loaded without AE2.
             if (Ae2Storage.canBind(level, pos)) {
@@ -41,6 +42,19 @@ public final class StorageBindingEvents {
             if (Ae2Storage.canHostGrid(level, pos)) {
                 player.displayClientMessage(
                         Component.translatable("message.veinminerplus.binder.ae2_offline"), true);
+                return;
+            }
+        }
+        if (ModList.get().isLoaded(RsStorage.MOD_ID)) {
+            // RS runs before the generic item handler: a disk drive exposes its disk slots as one,
+            // which would accept the binding and then reject every ordinary drop.
+            if (RsStorage.canBind(level, pos)) {
+                bind(event, player, card, StorageBindings.TYPE_RS, target(level, pos), pos);
+                return;
+            }
+            if (RsStorage.canHostNetwork(level, pos)) {
+                player.displayClientMessage(
+                        Component.translatable("message.veinminerplus.binder.rs_offline"), true);
                 return;
             }
         }

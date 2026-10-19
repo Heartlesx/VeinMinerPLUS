@@ -132,6 +132,18 @@ dependencies {
     // Curios is optional as well: it is only read to find a card worn in a trinket slot.
     compileOnly "top.theillusivec4.curios:curios-neoforge:${curios_version}:api"
 
+    // Refined Storage is optional too: the official API jar set is vendored under libs/rs-api so the
+    // storage binder can reach an RS network without a Maven artifact for it.
+    compileOnly files(
+            "libs/rs-api/refinedstorage-neoforge-api-${rs_version}.jar",
+            "libs/rs-api/refinedstorage-common-api-${rs_version}.jar",
+            "libs/rs-api/refinedstorage-core-api-${rs_version}.jar",
+            "libs/rs-api/refinedstorage-storage-api-${rs_version}.jar",
+            "libs/rs-api/refinedstorage-resource-api-${rs_version}.jar",
+            "libs/rs-api/refinedstorage-network-api-${rs_version}.jar",
+            "libs/rs-api/refinedstorage-autocrafting-api-${rs_version}.jar"
+    )
+
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
