@@ -112,6 +112,7 @@ public final class ChainEvents {
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
+    private static final Map<UUID, HandledBreak> HANDLED_BREAKS = new HashMap<>();
     private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
 
     @SubscribeEvent
@@ -142,6 +143,7 @@ public final class ChainEvents {
         PENDING_DOUBLE_PLANTS.remove(id);
         PENDING_SEEDS.remove(id);
         LAST_BREAK_FACES.remove(id);
+        HANDLED_BREAKS.remove(id);
     }
 
     @SubscribeEvent
@@ -149,6 +151,7 @@ public final class ChainEvents {
         if (event.getEntity() instanceof ServerPlayer player
                 && event.getAction() == PlayerInteractEvent.LeftClickBlock.Action.START) {
             LAST_BREAK_FACES.put(player.getUUID(), new BreakFace(event.getPos().immutable(), event.getFace()));
+            HANDLED_BREAKS.remove(player.getUUID());
         }
     }
 
@@ -171,6 +174,13 @@ public final class ChainEvents {
         BlockState state = event.getState();
         if (event.isCanceled() && level.getBlockState(target).is(state.getBlock())) {
             return;
+        }
+
+        // The drop event of a normal break fires after this handler, while a mod that breaks the
+        // block inside its own listener fires it first. Record which order this break is in, so a
+        // fallback buffer is only created for the latter.
+        if (!PENDING_DROPS.containsKey(id)) {
+            HANDLED_BREAKS.put(id, new HandledBreak(target, level.getGameTime()));
         }
 
         List<BlockPos> seeds = PENDING_SEEDS.get(id);
@@ -234,13 +244,22 @@ public final class ChainEvents {
                 drops = job == null ? null : job.drops;
             }
             if (drops == null && HELD_KEYS.contains(id)) {
-                // Some mods (Useless Mod's multi-tool) break the block inside their own HIGHEST
-                // BreakEvent listener, so this drop event fires before our lower-priority break
-                // handler has created the primary buffer. Create it here; onBlockBreak reuses it.
-                drops = new DropBuffer();
-                PENDING_DROPS.put(id, drops);
-                PENDING_DROP_ORIGINS.put(id, event.getPos().immutable());
-                PENDING_DOUBLE_PLANTS.put(id, event.getState().getBlock() instanceof DoublePlantBlock);
+                HandledBreak handled = HANDLED_BREAKS.get(id);
+                if (handled != null && handled.gameTime() == event.getLevel().getGameTime()
+                        && handled.pos().equals(event.getPos())) {
+                    // Our break handler already ran for this break, so this is a break it chose
+                    // not to chain. Leave the drops in the world instead of buffering them.
+                    HANDLED_BREAKS.remove(id);
+                } else {
+                    // Some mods (Useless Mod's multi-tool) break the block inside their own
+                    // HIGHEST BreakEvent listener, so this drop event fires before our
+                    // lower-priority break handler has created the primary buffer. Create it
+                    // here; onBlockBreak reuses it.
+                    drops = new DropBuffer();
+                    PENDING_DROPS.put(id, drops);
+                    PENDING_DROP_ORIGINS.put(id, event.getPos().immutable());
+                    PENDING_DOUBLE_PLANTS.put(id, event.getState().getBlock() instanceof DoublePlantBlock);
+                }
             }
         }
 
@@ -263,8 +282,18 @@ public final class ChainEvents {
             return;
         }
 
+        List<ItemStack> stacks = new ArrayList<>(event.getDrops().size());
         for (ItemEntity item : event.getDrops()) {
-            drops.add(item.getItem());
+            stacks.add(item.getItem());
+        }
+        if (event.getBreaker() instanceof ServerPlayer breaker) {
+            // The tool may post-process its drops after they have been generated (Useless Mod's
+            // auto-smelt does), and capturing here would skip that step. Its own helper decides
+            // whether the held tool asks for the conversion.
+            stacks = UselessModCompat.smeltDrops(event.getLevel(), stacks, breaker.getMainHandItem());
+        }
+        for (ItemStack stack : stacks) {
+            drops.add(stack);
         }
         event.getDrops().clear();
         drops.addExperience(event.getDroppedExperience());
@@ -1370,6 +1399,11 @@ public final class ChainEvents {
     }
 
     private record BreakFace(BlockPos pos, Direction face) {
+    }
+
+    // Marks a break our handler has already seen in this tick, so the drop event that follows it
+    // is not mistaken for one generated before the handler ran.
+    private record HandledBreak(BlockPos pos, long gameTime) {
     }
 
     // Mutable and reused: a chain owns one instance and points it at the block being broken now.
