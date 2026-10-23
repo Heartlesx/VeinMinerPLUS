@@ -11,12 +11,11 @@ import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.GlStateManager;
-import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.client.resources.I18n;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.Entity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.util.math.AxisAlignedBB;
+import net.minecraft.util.EnumFacing;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.RayTraceResult;
 import net.minecraft.util.text.TextComponentTranslation;
@@ -60,6 +59,13 @@ public final class VeinMinerPlusClient {
     private static List<BlockPos> previewTargets = Collections.emptyList();
     private static ItemStack previewItem = ItemStack.EMPTY;
     private static int previewHoldTicks;
+    // The region walk is bounded by the job's 1024 positions, which is too much work to repeat for
+    // every frame while the player does not move. The aim is resolved at most once per client tick;
+    // a different aimed block, face or held item resolves immediately.
+    private static int previewTick;
+    private static int previewResolvedTick = -1;
+    private static BlockPos previewOrigin;
+    private static EnumFacing previewFace;
 
     private VeinMinerPlusClient() {
     }
@@ -93,6 +99,9 @@ public final class VeinMinerPlusClient {
         previewTargets = Collections.emptyList();
         previewItem = ItemStack.EMPTY;
         previewHoldTicks = 0;
+        previewResolvedTick = -1;
+        previewOrigin = null;
+        previewFace = null;
     }
 
     // Network messages arrive on the netty thread, so the fields are written on the client thread.
@@ -114,6 +123,7 @@ public final class VeinMinerPlusClient {
         if (previewHoldTicks > 0) {
             previewHoldTicks--;
         }
+        previewTick++;
     }
 
     // Shift + arrow keys walk the mode list. The press switches immediately and the held key steps
@@ -277,15 +287,15 @@ public final class VeinMinerPlusClient {
         GlStateManager.tryBlendFuncSeparate(GlStateManager.SourceFactor.SRC_ALPHA,
                 GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA, GlStateManager.SourceFactor.ONE,
                 GlStateManager.DestFactor.ZERO);
-        GlStateManager.glLineWidth(2.0F);
+        // The thinnest line the driver offers; the outline is one boundary of the region instead of
+        // one box per block, so it does not need the thicker line to stay readable.
+        GlStateManager.glLineWidth(1.0F);
         GlStateManager.disableTexture2D();
         GlStateManager.depthMask(false);
-        for (BlockPos pos : targets) {
-            RenderGlobal.drawSelectionBoundingBox(new AxisAlignedBB(
-                    pos.getX() - 0.002D - viewX, pos.getY() - 0.002D - viewY, pos.getZ() - 0.002D - viewZ,
-                    pos.getX() + 1.0D + 0.002D - viewX, pos.getY() + 1.0D + 0.002D - viewY,
-                    pos.getZ() + 1.0D + 0.002D - viewZ), 1.0F, 1.0F, 1.0F, 1.0F);
-        }
+        // The aimed block is drawn by the vanilla selection box; this outline leaves it out so the
+        // two never stack. When the aim is currently invalid the held position is not advertised,
+        // so no new gap is invented for it.
+        InteractOutline.draw(targets, currentAimBlock(minecraft), viewX, viewY, viewZ);
         GlStateManager.depthMask(true);
         GlStateManager.enableTexture2D();
         GlStateManager.disableBlend();
@@ -298,9 +308,19 @@ public final class VeinMinerPlusClient {
         ItemStack held = minecraft.player.getHeldItemMainhand();
         if (minecraft.world != null && minecraft.objectMouseOver != null
                 && minecraft.objectMouseOver.typeOfHit == RayTraceResult.Type.BLOCK) {
+            BlockPos origin = minecraft.objectMouseOver.getBlockPos();
+            EnumFacing face = minecraft.objectMouseOver.sideHit;
+            boolean sameAim = origin.equals(previewOrigin) && face == previewFace
+                    && sameHeldItem(previewItem, held);
+            if (sameAim && previewResolvedTick == previewTick && previewHoldTicks > 0) {
+                return previewTargets;
+            }
             List<BlockPos> targets = new ArrayList<>();
-            if (ChainEvents.collectInteractTargets(minecraft.world, minecraft.objectMouseOver.getBlockPos(),
-                    held, ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
+            previewResolvedTick = previewTick;
+            previewOrigin = origin;
+            previewFace = face;
+            if (ChainEvents.collectInteractTargets(minecraft.world, origin, face, held,
+                    ChainEvents.INTERACT_PREVIEW_LIMIT, targets)
                     && !targets.isEmpty()) {
                 previewTargets = targets;
                 if (!sameHeldItem(previewItem, held)) {
@@ -309,6 +329,11 @@ public final class VeinMinerPlusClient {
                 previewHoldTicks = PREVIEW_HOLD_TICKS;
                 return targets;
             }
+            // The aim is valid but nothing can be done with it, so the old outline is dropped
+            // instead of lingering over an area the job would not touch.
+            previewTargets = Collections.emptyList();
+            previewHoldTicks = 0;
+            return previewTargets;
         }
         // A changed held item invalidates the last preview: the outline would no longer match what
         // using that item would do.
@@ -320,6 +345,16 @@ public final class VeinMinerPlusClient {
 
     private static boolean sameHeldItem(ItemStack first, ItemStack second) {
         return ItemStack.areItemsEqual(first, second) && ItemStack.areItemStackTagsEqual(first, second);
+    }
+
+    // The block the crosshair is on right now, or null when there is no real block hit. The held
+    // preview keeps its old outline but must not claim a block it is no longer aiming at.
+    private static BlockPos currentAimBlock(Minecraft minecraft) {
+        if (minecraft.objectMouseOver == null
+                || minecraft.objectMouseOver.typeOfHit != RayTraceResult.Type.BLOCK) {
+            return null;
+        }
+        return minecraft.objectMouseOver.getBlockPos();
     }
 
     private static boolean isChainKeyActive(Minecraft minecraft) {

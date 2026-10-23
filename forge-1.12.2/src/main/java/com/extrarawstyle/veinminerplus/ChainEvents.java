@@ -33,6 +33,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemAxe;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.item.ItemDye;
+import net.minecraft.item.ItemFlintAndSteel;
 import net.minecraft.item.ItemHoe;
 import net.minecraft.item.ItemSpade;
 import net.minecraft.item.ItemStack;
@@ -73,7 +74,9 @@ public final class ChainEvents {
     private static final int INTERACT_BLOCK_LIMIT = 1024;
     private static final int INTERACT_MAX_RADIUS = 16;
     private static final int INTERACT_BLOCKS_PER_TICK = 64;
-    static final int INTERACT_PREVIEW_LIMIT = 128;
+    // The preview walks the same region the job does, so it is aligned to the job's cap. The
+    // client only draws the outline once, so the larger cap costs nothing per block.
+    static final int INTERACT_PREVIEW_LIMIT = INTERACT_BLOCK_LIMIT;
     private static final double TPS_WARNING_THRESHOLD = 12.0D;
     private static final double TPS_CRITICAL_THRESHOLD = 8.0D;
     private static final double TPS_RECOVERY_THRESHOLD = 16.0D;
@@ -108,6 +111,7 @@ public final class ChainEvents {
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
+    private static final Map<UUID, PendingUse> PENDING_USES = new HashMap<>();
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
 
     @SubscribeEvent
@@ -132,6 +136,7 @@ public final class ChainEvents {
         PENDING_DROP_ORIGINS.remove(id);
         PENDING_DOUBLE_PLANTS.remove(id);
         LAST_BREAK_FACES.remove(id);
+        PENDING_USES.remove(id);
     }
 
     @SubscribeEvent
@@ -336,59 +341,94 @@ public final class ChainEvents {
         }
 
         WorldServer level = (WorldServer) world;
-        List<BlockPos> targets = new ArrayList<>();
-        boolean handled = collectInteractTargets(level, event.getPos(), player.getHeldItemMainhand(),
-                INTERACT_BLOCK_LIMIT, targets);
-        if (!handled || targets.isEmpty()) {
+        InteractPlan plan = planInteract(level, event.getPos(), event.getFace(), player.getHeldItemMainhand(),
+                INTERACT_BLOCK_LIMIT);
+        if (plan == null) {
             return;
         }
 
         boolean harvest = isHarvestable(level.getBlockState(event.getPos()));
-        ACTIVE_INTERACT_JOBS.put(id, new InteractJob(level, player, targets, harvest));
+        if (harvest) {
+            // Harvesting is done by this mod, not by the vanilla right click, so there is no
+            // first hit to wait for and the aimed block is used like every other one.
+            ACTIVE_INTERACT_JOBS.put(id, new InteractJob(level, player, plan.filter, true, event.getFace(),
+                    event.getPos().toImmutable(), false));
+            return;
+        }
+        // The vanilla use runs right after this event, so its result is only known at the end of
+        // the tick. The chain starts from that confirmation, never from a click that was
+        // protected, cancelled or refused.
+        PENDING_USES.put(id, new PendingUse(level, player, event.getPos().toImmutable(), event.getFace(),
+                plan.filter));
     }
 
     // Shared by the server job and the client preview, so the outline always matches what the
-    // job will do. Returns false when the held item is not handled by this mode.
-    static boolean collectInteractTargets(World level, BlockPos origin, ItemStack stack, int limit,
-            List<BlockPos> targets) {
+    // job will do. Returns false when the held item is not handled by this mode. The face is the
+    // one the player clicked: the flint and steel lights the cell on it, and the vanilla gate for
+    // every other item ignores it.
+    static boolean collectInteractTargets(World level, BlockPos origin, EnumFacing face, ItemStack stack,
+            int limit, List<BlockPos> targets) {
+        InteractPlan plan = planInteract(level, origin, face, stack, limit);
+        if (plan == null) {
+            return false;
+        }
+        targets.addAll(plan.targets);
+        return !targets.isEmpty();
+    }
+
+    // Every action walks the same flat eight-neighbour region around the click, so the square is
+    // one connected area: a block only joins when it shares an edge or a corner with one already
+    // in the region. The aimed block itself has to be actionable, or nothing starts.
+    private static InteractPlan planInteract(World level, BlockPos origin, EnumFacing face, ItemStack stack,
+            int limit) {
+        TargetFilter filter = interactFilter(level, origin, face, stack);
+        if (filter == null || !filter.test(origin)) {
+            return null;
+        }
+        List<BlockPos> targets = new ArrayList<>();
+        spreadRegion(level, origin, limit, targets, filter);
+        return new InteractPlan(filter, targets);
+    }
+
+    // One definition of "this item applies here" for the server job and the client preview.
+    private static TargetFilter interactFilter(World level, BlockPos origin, EnumFacing face, ItemStack stack) {
         IBlockState originState = level.getBlockState(origin);
         if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
-            spreadSquare(level, origin, limit, targets, pos -> {
+            return pos -> {
                 IBlockState state = level.getBlockState(pos);
                 return isHarvestable(state) && !BlockBlacklist.contains(state);
-            });
-            return true;
+            };
         }
         Item item = stack.getItem();
         if (item instanceof ItemHoe) {
-            spreadSquare(level, origin, limit, targets, pos -> isTillable(level, pos));
-            return true;
+            return pos -> isTillable(level, pos);
         }
-        // GregTech registers its tools under the vanilla shovel tool class instead of extending
-        // ItemSpade, so the class alone would miss them.
         if (item instanceof ItemSpade || item.getToolClasses(stack).contains(SHOVEL_TOOL_CLASS)) {
-            spreadSquare(level, origin, limit, targets, pos -> isPathable(level, pos));
-            return true;
+            // GregTech registers its tools under the vanilla shovel tool class instead of
+            // extending ItemSpade, so the class alone would miss them.
+            return pos -> isPathable(level, pos);
         }
-        // 1.12.2 splits the seeds over two families that share no superclass: ItemSeeds (wheat,
-        // nether wart) and ItemSeedFood (carrot, potato, beetroot). IPlantable is what both use to
-        // ask a soil whether it accepts them, so the same question is asked here.
         if (item instanceof IPlantable) {
-            spreadSquare(level, origin, limit, targets, pos -> isPlantable(level, pos, (IPlantable) item));
-            return true;
+            // 1.12.2 splits the seeds over two families that share no superclass: ItemSeeds
+            // (wheat, nether wart) and ItemSeedFood (carrot, potato, beetroot). IPlantable is what
+            // both use to ask a soil whether it accepts them.
+            return pos -> isPlantable(level, pos, (IPlantable) item);
         }
-        // The vanilla item grows whatever IGrowable accepts, so the same gate is used here.
         if (item instanceof ItemDye && EnumDyeColor.byDyeDamage(stack.getMetadata()) == EnumDyeColor.WHITE) {
-            spreadSquare(level, origin, limit, targets, pos -> isFertilizable(level, pos));
-            return true;
+            // The vanilla item grows whatever IGrowable accepts, so the same gate is used.
+            return pos -> isFertilizable(level, pos);
         }
-        // An axe strips logs, so its neighbours of the same kind are collected. Anything the held
-        // item does not apply to is skipped by the vanilla gate inside interactOne.
+        if (item instanceof ItemFlintAndSteel) {
+            // The fire cell is the one in front of the clicked face, so the blocks of the same kind
+            // are the candidates; TNT is lit through its own right click and needs no empty cell.
+            return pos -> isIgnitionSpot(level, pos, face) && sameKind(originState, level.getBlockState(pos));
+        }
         if (isAppliedToBlock(stack, originState)) {
-            spreadSquare(level, origin, limit, targets, pos -> sameKind(originState, level.getBlockState(pos)));
-            return true;
+            // An axe strips logs, so its neighbours of the same kind are collected. Anything the
+            // held item does not apply to is skipped by the vanilla gate in interactOne.
+            return pos -> sameKind(originState, level.getBlockState(pos));
         }
-        return false;
+        return null;
     }
 
     private static boolean isAppliedToBlock(ItemStack stack, IBlockState state) {
@@ -401,30 +441,50 @@ public final class ChainEvents {
         return false;
     }
 
-    // Grows a square outward from the origin, one ring per step. Stops at the limit, at the
-    // radius cap, or as soon as a whole ring holds nothing the held item could be used on.
-    private static void spreadSquare(World level, BlockPos origin, int limit, List<BlockPos> targets,
+    // Flat eight-neighbour region around the origin: edge and corner contact both connect. The
+    // walk is breadth first, so every block is reached through the shortest distance from the
+    // click and the near blocks are always collected first. Blocks that are not actionable are
+    // never entered, so they cannot bridge two separate areas.
+    private static void spreadRegion(World level, BlockPos origin, int limit, List<BlockPos> targets,
             TargetFilter valid) {
-        int y = origin.getY();
-        for (int radius = 0; radius <= INTERACT_MAX_RADIUS && targets.size() < limit; radius++) {
-            boolean found = false;
-            for (int dx = -radius; dx <= radius && targets.size() < limit; dx++) {
-                // The top and bottom rows of a ring hold every column; the rows between them hold
-                // only their two edge cells. Walking just those cells visits the same positions in
-                // the same order without stepping over the interior of the square.
-                int step = dx == -radius || dx == radius ? 1 : radius * 2;
-                for (int dz = -radius; dz <= radius && targets.size() < limit; dz += step) {
-                    BlockPos pos = new BlockPos(origin.getX() + dx, y, origin.getZ() + dz);
-                    if (level.isValid(pos) && valid.test(pos)) {
-                        targets.add(pos);
-                        found = true;
+        Set<BlockPos> seen = new HashSet<>();
+        Deque<BlockPos> frontier = new ArrayDeque<>();
+        seen.add(origin);
+        frontier.addLast(origin);
+        while (!frontier.isEmpty() && targets.size() < limit) {
+            BlockPos current = frontier.removeFirst();
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
                     }
+                    BlockPos next = new BlockPos(current.getX() + dx, current.getY(), current.getZ() + dz);
+                    if (Math.max(Math.abs(next.getX() - origin.getX()), Math.abs(next.getZ() - origin.getZ()))
+                            > INTERACT_MAX_RADIUS) {
+                        continue;
+                    }
+                    if (!seen.add(next) || !level.isValid(next) || !valid.test(next)) {
+                        continue;
+                    }
+                    targets.add(next);
+                    if (targets.size() >= limit) {
+                        return;
+                    }
+                    frontier.addLast(next);
                 }
             }
-            if (radius > 0 && !found) {
-                break;
-            }
         }
+    }
+
+    // A candidate the flint and steel can be used on. The fire cell is the one in front of the
+    // clicked face, and it has to be empty for the vanilla item to place fire; a TNT block is lit
+    // by the block's own right click instead, so it needs no empty cell.
+    private static boolean isIgnitionSpot(World level, BlockPos pos, EnumFacing face) {
+        return isTnt(level.getBlockState(pos)) || level.isAirBlock(pos.offset(face));
+    }
+
+    private static boolean isTnt(IBlockState state) {
+        return state.getBlock() == Blocks.TNT;
     }
 
     // Selection is deliberately a little looser than vanilla: the use is still the final gate when
@@ -476,6 +536,7 @@ public final class ChainEvents {
             return;
         }
         startPendingJobs();
+        confirmPendingUses();
         if (!ACTIVE_JOBS.isEmpty()) {
             for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
                 job.tick();
@@ -496,6 +557,19 @@ public final class ChainEvents {
         PENDING_STARTS.clear();
         for (PendingStart start : starts) {
             start.begin();
+        }
+    }
+
+    // The vanilla right click of the tick has finished by the end of the server tick, so this is
+    // where the aimed block can be checked for the use that had to happen before chaining.
+    private static void confirmPendingUses() {
+        if (PENDING_USES.isEmpty()) {
+            return;
+        }
+        List<PendingUse> pending = new ArrayList<>(PENDING_USES.values());
+        PENDING_USES.clear();
+        for (PendingUse use : pending) {
+            use.confirm();
         }
     }
 
@@ -941,7 +1015,8 @@ public final class ChainEvents {
     // Runs the same server-side right click a manual one would reach, so tool damage, sounds and
     // mod interactions stay with vanilla and other mods. A mature crop is harvested directly
     // instead, because right click harvesting is not part of the vanilla interact pipeline.
-    private static boolean interactOne(WorldServer level, EntityPlayerMP player, BlockPos pos) {
+    private static boolean interactOne(WorldServer level, EntityPlayerMP player, BlockPos pos,
+            EnumFacing face) {
         IBlockState state = level.getBlockState(pos);
         if (isHarvestable(state)) {
             return !BlockBlacklist.contains(state) && harvestOne(level, player, pos, state);
@@ -951,10 +1026,17 @@ public final class ChainEvents {
         if (stack.isEmpty()) {
             return false;
         }
+        // The vanilla flint and steel reports success and wears down even when the fire cell is
+        // taken, so the target is checked against the same gate first. Lighting TNT is the block's
+        // own right click and never needs an empty cell.
+        if (stack.getItem() instanceof ItemFlintAndSteel
+                && !isTnt(state) && !level.isAirBlock(pos.offset(face))) {
+            return false;
+        }
 
         float exhaustion = player.getFoodStats().foodExhaustionLevel;
         EnumActionResult result = player.interactionManager.processRightClickBlock(player, level, stack,
-                EnumHand.MAIN_HAND, pos, EnumFacing.UP, 0.5F, 0.5F, 0.5F);
+                EnumHand.MAIN_HAND, pos, face, 0.5F, 0.5F, 0.5F);
         if (Config.noHungerCost) {
             player.getFoodStats().foodExhaustionLevel = exhaustion;
         }
@@ -1021,16 +1103,50 @@ public final class ChainEvents {
     private static final class InteractJob {
         private final WorldServer level;
         private final EntityPlayerMP player;
-        private final Deque<BlockPos> targets;
+        private final TargetFilter filter;
         private final boolean harvest;
+        private final EnumFacing face;
+        private final BlockPos origin;
+        // Set when the vanilla right click already used the aimed block: it must not be used again.
+        private final boolean skipOrigin;
+        private final Set<BlockPos> examined = new HashSet<>();
+        private final PriorityQueue<BlockPos> pending;
         private int processedCount;
 
-        private InteractJob(WorldServer level, EntityPlayerMP player, List<BlockPos> targets,
-                boolean harvest) {
+        private InteractJob(WorldServer level, EntityPlayerMP player, TargetFilter filter, boolean harvest,
+                EnumFacing face, BlockPos origin, boolean skipOrigin) {
             this.level = level;
             this.player = player;
-            this.targets = new ArrayDeque<>(targets);
+            this.filter = filter;
             this.harvest = harvest;
+            this.face = face;
+            this.origin = origin;
+            this.skipOrigin = skipOrigin;
+            this.pending = new PriorityQueue<>(new Comparator<BlockPos>() {
+                @Override
+                public int compare(BlockPos first, BlockPos second) {
+                    int result = Integer.compare(distance(first), distance(second));
+                    if (result != 0) {
+                        return result;
+                    }
+                    result = Integer.compare(first.getX(), second.getX());
+                    return result != 0 ? result : Integer.compare(first.getZ(), second.getZ());
+                }
+
+                private int distance(BlockPos pos) {
+                    return Math.max(Math.abs(pos.getX() - origin.getX()), Math.abs(pos.getZ() - origin.getZ()));
+                }
+            });
+            if (skipOrigin) {
+                // The aimed block was already used by the vanilla right click that confirmed this
+                // job, so it is counted once and never used a second time.
+                examined.add(origin);
+                processedCount = 1;
+                addNeighbours(origin);
+            } else {
+                examined.add(origin);
+                pending.add(origin);
+            }
         }
 
         private void tick() {
@@ -1042,15 +1158,24 @@ public final class ChainEvents {
 
             int processed = 0;
             int counted = 0;
-            while (!targets.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK) {
+            boolean spent = false;
+            while (!pending.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK) {
                 processed++;
-                if (interactOne(level, player, targets.poll())) {
+                BlockPos target = pending.poll();
+                // A position that stopped matching (already tilled, harvested, blown up, covered)
+                // is skipped and never expands the region: a failed use must not bridge.
+                if (!filter.test(target)) {
+                    continue;
+                }
+                if (interactOne(level, player, target, face)) {
                     processedCount++;
                     counted++;
+                    addNeighbours(target);
                 }
                 // A consumed seed stack or a broken tool ends the chain. Harvesting never uses up
                 // the held item, and is usually done bare handed, so it must not stop there.
                 if (!harvest && player.getHeldItemMainhand().isEmpty()) {
+                    spent = true;
                     break;
                 }
             }
@@ -1059,13 +1184,90 @@ public final class ChainEvents {
                 showInteractProgress(player, processedCount);
             }
 
-            if (targets.isEmpty()) {
+            if (spent || pending.isEmpty() || processedCount >= INTERACT_BLOCK_LIMIT) {
                 finish();
+            }
+        }
+
+        private void addNeighbours(BlockPos center) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
+                    }
+                    BlockPos next = new BlockPos(center.getX() + dx, center.getY(), center.getZ() + dz);
+                    if (Math.max(Math.abs(next.getX() - origin.getX()), Math.abs(next.getZ() - origin.getZ()))
+                            > INTERACT_MAX_RADIUS) {
+                        continue;
+                    }
+                    if (!examined.add(next) || !level.isValid(next) || !filter.test(next)) {
+                        continue;
+                    }
+                    pending.add(next);
+                }
             }
         }
 
         private void finish() {
             ACTIVE_INTERACT_JOBS.remove(player.getUniqueID(), this);
+        }
+    }
+
+    // The aimed block is used by the vanilla right click right after the event, so its outcome is
+    // only known at the end of the tick. The chain starts from that confirmation instead of from a
+    // click that may have been protected, cancelled or refused.
+    private static final class PendingUse {
+        private final WorldServer level;
+        private final EntityPlayerMP player;
+        private final BlockPos origin;
+        private final EnumFacing face;
+        private final TargetFilter filter;
+        // The cells any of the supported actions can change: the target itself, the cell above it
+        // (seeds, crops) and the 3x3 above it (bone meal on grass grows its plants there), plus the
+        // cell the clicked face points at (fire).
+        private final IBlockState[] before;
+        private final BlockPos[] watched;
+
+        private PendingUse(WorldServer level, EntityPlayerMP player, BlockPos origin, EnumFacing face,
+                TargetFilter filter) {
+            this.level = level;
+            this.player = player;
+            this.origin = origin;
+            this.face = face;
+            this.filter = filter;
+            this.watched = watchedCells(origin, face);
+            this.before = new IBlockState[watched.length];
+            for (int index = 0; index < watched.length; index++) {
+                before[index] = level.getBlockState(watched[index]);
+            }
+        }
+
+        private boolean confirm() {
+            if (!level.isValid(origin) || !HELD_KEYS.contains(player.getUniqueID())
+                    || player.isSpectator() || player.getServerWorld() != level
+                    || ACTIVE_INTERACT_JOBS.containsKey(player.getUniqueID())) {
+                return false;
+            }
+            for (int index = 0; index < watched.length; index++) {
+                if (!before[index].equals(level.getBlockState(watched[index]))) {
+                    ACTIVE_INTERACT_JOBS.put(player.getUniqueID(),
+                            new InteractJob(level, player, filter, false, face, origin, true));
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static BlockPos[] watchedCells(BlockPos origin, EnumFacing face) {
+            Set<BlockPos> cells = new HashSet<>();
+            cells.add(origin);
+            cells.add(origin.offset(face));
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    cells.add(origin.add(dx, 1, dz));
+                }
+            }
+            return cells.toArray(new BlockPos[0]);
         }
     }
 
@@ -1526,6 +1728,18 @@ public final class ChainEvents {
 
     private interface TargetFilter {
         boolean test(BlockPos pos);
+    }
+
+    // The filter that collected a region and the positions it accepted, kept together so the job
+    // can re-test a position right before using it.
+    private static final class InteractPlan {
+        private final TargetFilter filter;
+        private final List<BlockPos> targets;
+
+        private InteractPlan(TargetFilter filter, List<BlockPos> targets) {
+            this.filter = filter;
+            this.targets = targets;
+        }
     }
 
     private static final class BreakFace {

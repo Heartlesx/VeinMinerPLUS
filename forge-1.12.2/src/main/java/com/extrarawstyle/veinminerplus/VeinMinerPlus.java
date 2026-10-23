@@ -11,7 +11,7 @@ import net.minecraftforge.fml.common.event.FMLServerStartingEvent;
 public class VeinMinerPlus {
     public static final String MODID = "veinminerplus";
     public static final String NAME = "VeinMinerPlus";
-    public static final String VERSION = "4.2.6-dev6-forge-1.12.2";
+    public static final String VERSION = "4.2.6-dev9-forge-1.12.2";
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
