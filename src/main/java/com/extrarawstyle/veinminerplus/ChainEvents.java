@@ -7,7 +7,6 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -39,6 +38,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ShovelItem;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.Recipe;
@@ -47,6 +47,7 @@ import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BaseFireBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.CocoaBlock;
 import net.minecraft.world.level.block.CropBlock;
@@ -82,7 +83,8 @@ public final class ChainEvents {
     private static final int INTERACT_BLOCK_LIMIT = 1024;
     private static final int INTERACT_MAX_RADIUS = 16;
     private static final int INTERACT_BLOCKS_PER_TICK = 64;
-    static final int INTERACT_PREVIEW_LIMIT = 128;
+    // The preview shows exactly what the server would handle, so both use the same cap.
+    static final int INTERACT_PREVIEW_LIMIT = INTERACT_BLOCK_LIMIT;
     private static final double TPS_WARNING_THRESHOLD = 12.0D;
     private static final double TPS_CRITICAL_THRESHOLD = 8.0D;
     private static final double TPS_RECOVERY_THRESHOLD = 16.0D;
@@ -113,6 +115,7 @@ public final class ChainEvents {
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
     private static final Map<UUID, HandledBreak> HANDLED_BREAKS = new HashMap<>();
+    private static final Map<UUID, PendingFireStart> PENDING_FIRE_STARTS = new HashMap<>();
     private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
 
     @SubscribeEvent
@@ -144,6 +147,7 @@ public final class ChainEvents {
         PENDING_SEEDS.remove(id);
         LAST_BREAK_FACES.remove(id);
         HANDLED_BREAKS.remove(id);
+        PENDING_FIRE_STARTS.remove(id);
     }
 
     @SubscribeEvent
@@ -335,57 +339,111 @@ public final class ChainEvents {
         if (!HELD_KEYS.contains(id)
                 || PLAYER_MODES.getOrDefault(id, ChainMode.NORMAL) != ChainMode.SPECIAL_INTERACT
                 || ACTIVE_INTERACT_JOBS.containsKey(id)
+                || PENDING_FIRE_STARTS.containsKey(id)
                 || player.isSpectator()) {
             return;
         }
 
-        List<BlockPos> targets = new ArrayList<>();
-        if (!collectInteractTargets(level, event.getPos(), player.getMainHandItem(),
-                INTERACT_BLOCK_LIMIT, targets) || targets.isEmpty()) {
+        ItemStack held = player.getMainHandItem();
+        InteractAction action = interactAction(level, event.getPos(), held);
+        if (action == null) {
             return;
         }
 
-        boolean harvest = isHarvestable(level.getBlockState(event.getPos()));
-        ACTIVE_INTERACT_JOBS.put(id, new InteractJob(level, player, targets, harvest));
+        // A flint and steel fires this event before the vanilla action runs, and only that action
+        // decides whether the click succeeded, so the job waits for the end of the tick and starts
+        // only when the aimed block really changed.
+        if (held.is(Items.FLINT_AND_STEEL)) {
+            PENDING_FIRE_STARTS.put(id, new PendingFireStart(level, event.getPos().immutable(),
+                    event.getFace(), level.getBlockState(event.getPos()), action));
+            return;
+        }
+        ACTIVE_INTERACT_JOBS.put(id, new InteractJob(level, player, event.getPos().immutable(),
+                event.getFace(), action));
     }
 
-    // Shared by the server job and the client preview, so the white outline always matches what
-    // the job will do. Returns false when the held item is not handled by this mode.
-    static boolean collectInteractTargets(Level level, BlockPos origin, ItemStack stack, int limit,
-            List<BlockPos> targets) {
+    // Runs after the player packet that performed the click has been handled, so the aimed block has
+    // already been acted on by then. A click the game refused leaves the block untouched and no job
+    // starts.
+    private void resolvePendingFireStart(ServerPlayer player) {
+        UUID id = player.getUUID();
+        PendingFireStart pending = PENDING_FIRE_STARTS.remove(id);
+        if (pending == null || pending.level() != player.serverLevel() || player.isRemoved()
+                || player.isSpectator() || !HELD_KEYS.contains(id)) {
+            return;
+        }
+        // A click that used up the last durability leaves nothing to spread with.
+        if (!player.getMainHandItem().is(Items.FLINT_AND_STEEL)) {
+            return;
+        }
+        // Lit campfires, candles and primed TNT change the block itself, plain ignition places fire
+        // against the clicked face. Either counts; an unchanged world means the game refused.
+        boolean changed = !pending.state().equals(pending.level().getBlockState(pending.pos()));
+        boolean firePlaced = pending.level().getBlockState(pending.pos().relative(pending.face()))
+                .getBlock() instanceof BaseFireBlock;
+        if (changed || firePlaced) {
+            ACTIVE_INTERACT_JOBS.put(id, new InteractJob(pending.level(), player, pending.pos(),
+                    pending.face(), pending.action()));
+        }
+    }
+
+    // The action the interaction mode would apply, described once so the client preview and the
+    // server job select from the same rules. Null when the held item is not handled by this mode, or
+    // when the aimed block is not something this action applies to: an unsuitable start spreads
+    // nothing.
+    record InteractAction(Predicate<BlockPos> valid, boolean originCounts, boolean harvest) {
+    }
+
+    static InteractAction interactAction(Level level, BlockPos origin, ItemStack stack) {
         BlockState originState = level.getBlockState(origin);
         if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
-            spreadSquare(level, origin, limit, targets, pos -> {
+            return new InteractAction(pos -> {
                 BlockState state = level.getBlockState(pos);
                 return isHarvestable(state) && !BlockBlacklist.contains(state);
-            });
-            return true;
+            }, true, true);
         }
         // The NeoForge ability, not `instanceof HoeItem`, for the same reason as the axe check
         // below: modded multi-tools may hoe without extending the vanilla class.
-        if (stack.canPerformAction(ItemAbilities.HOE_TILL)) {
-            spreadSquare(level, origin, limit, targets, pos -> isTillable(level, pos));
-            return true;
+        if (stack.canPerformAction(ItemAbilities.HOE_TILL) && isTillable(level, origin)) {
+            return new InteractAction(pos -> isTillable(level, pos), true, false);
         }
         // Shovels flatten grass and dirt into paths. The origin must itself be flattenable, so a
         // shovel aimed at gravel or sand does not silently flatten the lawn around it.
         if (stack.canPerformAction(ItemAbilities.SHOVEL_FLATTEN) && isFlattenable(level, origin)) {
-            spreadSquare(level, origin, limit, targets, pos -> isFlattenable(level, pos));
-            return true;
+            return new InteractAction(pos -> isFlattenable(level, pos), true, false);
         }
-        if (stack.getItem() instanceof ItemNameBlockItem) {
-            spreadSquare(level, origin, limit, targets, pos -> isPlantable(level, pos));
-            return true;
+        if (stack.getItem() instanceof ItemNameBlockItem && isPlantable(level, origin)) {
+            return new InteractAction(pos -> isPlantable(level, pos), true, false);
         }
         // An axe strips logs, and Create applies its own recipes to the clicked block; both work on
         // the block the player aimed at, so its neighbours of the same kind are collected. Anything
         // the held item does not apply to is skipped by the vanilla gate inside interactOne.
         if (isAppliedToBlock(level, stack, originState)) {
             Block originBlock = originState.getBlock();
-            spreadSquare(level, origin, limit, targets, pos -> level.getBlockState(pos).is(originBlock));
-            return true;
+            return new InteractAction(pos -> level.getBlockState(pos).is(originBlock), true, false);
         }
-        return false;
+        // A flint and steel lights the block it is aimed at. Only the vanilla item is handled: the
+        // vanilla gate inside interactOne stays the final authority, so a position the item would
+        // refuse simply does nothing. Neighbours of the same block are collected without checking
+        // whether fire could be placed next to them: TNT and other blocks ignite inside their own
+        // right-click handler, where an adjacent free space is not required. The origin is skipped
+        // because the click that started the chain already ran for it, but it still seeds the search.
+        if (stack.is(Items.FLINT_AND_STEEL)) {
+            Block originBlock = originState.getBlock();
+            return new InteractAction(pos -> level.getBlockState(pos).is(originBlock), false, false);
+        }
+        return null;
+    }
+
+    static boolean collectInteractTargets(Level level, BlockPos origin, ItemStack stack, int limit,
+            List<BlockPos> targets) {
+        InteractAction action = interactAction(level, origin, stack);
+        if (action == null) {
+            return false;
+        }
+        InteractArea.collect(origin, INTERACT_MAX_RADIUS, limit, action.originCounts(),
+                pos -> level.isInWorldBounds(pos) && action.valid().test(pos), targets);
+        return true;
     }
 
     // An axe is applied to logs. Create's item application is recipe driven: the loaded recipe list
@@ -433,31 +491,6 @@ public final class ChainEvents {
         return false;
     }
 
-    // Grows a square outward from the origin, one ring per step. Stops at the limit, at the
-    // radius cap, or as soon as a whole ring holds nothing the held item could be used on.
-    private static void spreadSquare(Level level, BlockPos origin, int limit, List<BlockPos> targets,
-            Predicate<BlockPos> valid) {
-        int y = origin.getY();
-        for (int radius = 0; radius <= INTERACT_MAX_RADIUS && targets.size() < limit; radius++) {
-            boolean found = false;
-            for (int dx = -radius; dx <= radius && targets.size() < limit; dx++) {
-                for (int dz = -radius; dz <= radius && targets.size() < limit; dz++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
-                        continue;
-                    }
-                    BlockPos pos = new BlockPos(origin.getX() + dx, y, origin.getZ() + dz);
-                    if (level.isInWorldBounds(pos) && valid.test(pos)) {
-                        targets.add(pos);
-                        found = true;
-                    }
-                }
-            }
-            if (radius > 0 && !found) {
-                break;
-            }
-        }
-    }
-
     // Selection is deliberately a little looser than vanilla: useOn is still the final gate when
     // the job runs, so a position vanilla would refuse is simply skipped.
     private static boolean isTillable(Level level, BlockPos pos) {
@@ -493,6 +526,9 @@ public final class ChainEvents {
 
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
+        for (Player player : event.getServer().getPlayerList().getPlayers()) {
+            resolvePendingFireStart((ServerPlayer) player);
+        }
         for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
             job.tick();
         }
@@ -878,7 +914,13 @@ public final class ChainEvents {
     // interactions (Create's item application) and the actual conversion stay with vanilla and other
     // mods. A mature crop is harvested directly instead, because the pack's right click harvesting
     // lives in FTB Ultimine rather than in the interact pipeline.
-    private static boolean interactOne(ServerLevel level, ServerPlayer player, BlockPos pos) {
+    private static boolean interactOne(ServerLevel level, ServerPlayer player, BlockPos pos,
+            Direction face) {
+        // The chained positions never pass through the packet handler that normally checks this.
+        if (!level.mayInteract(player, pos)) {
+            return false;
+        }
+
         BlockState state = level.getBlockState(pos);
         if (isHarvestable(state)) {
             return !BlockBlacklist.contains(state) && harvestOne(level, player, pos, state);
@@ -892,7 +934,7 @@ public final class ChainEvents {
         float exhaustion = player.getFoodData().getExhaustionLevel();
         // The full pipeline, so mods that hook the interact event see every chained position too.
         InteractionResult result = player.gameMode.useItemOn(player, level, stack, InteractionHand.MAIN_HAND,
-                new BlockHitResult(Vec3.atCenterOf(pos), Direction.UP, pos, false));
+                new BlockHitResult(Vec3.atCenterOf(pos), face, pos, false));
         if (Config.NO_HUNGER_COST.get()) {
             player.getFoodData().setExhaustion(exhaustion);
         }
@@ -928,19 +970,63 @@ public final class ChainEvents {
         return state.setValue(CocoaBlock.AGE, 0);
     }
 
+    // Spreads one interaction over the area, one step at a time. A position is only used to reach
+    // further positions after the game actually applied the action to it, so a position that refused
+    // the action cannot carry the chain across a gap.
     private static final class InteractJob {
         private final ServerLevel level;
         private final ServerPlayer player;
-        private final Deque<BlockPos> targets;
         private final boolean harvest;
+        private final Direction face;
+        private final ItemStack tool;
+        private final Predicate<BlockPos> valid;
+        // Nearer positions are handled first; a position reached later is queued after everything
+        // already waiting, which keeps the radius ordering of the old selection.
+        private final PriorityQueue<BlockPos> frontier;
+        private final Set<BlockPos> seen = new HashSet<>();
         private int processedCount;
 
-        private InteractJob(ServerLevel level, ServerPlayer player, List<BlockPos> targets,
-                boolean harvest) {
+        private InteractJob(ServerLevel level, ServerPlayer player, BlockPos origin, Direction face,
+                InteractAction action) {
             this.level = level;
             this.player = player;
-            this.targets = new ArrayDeque<>(targets);
-            this.harvest = harvest;
+            this.harvest = action.harvest();
+            this.face = face;
+            this.tool = player.getMainHandItem().copy();
+            this.valid = action.valid();
+            this.frontier = new PriorityQueue<>(nearFirst(origin));
+            this.seen.add(origin);
+            // The click itself already ran for the aimed block, unless this action is one where the
+            // aimed block is part of the area.
+            if (action.originCounts()) {
+                addNeighbours(origin);
+            } else {
+                frontier.addAll(collectNeighbours(origin));
+            }
+        }
+
+        private static Comparator<BlockPos> nearFirst(BlockPos origin) {
+            return Comparator
+                    .comparingInt((BlockPos pos) -> Math.max(Math.abs(pos.getX() - origin.getX()),
+                            Math.abs(pos.getZ() - origin.getZ())))
+                    .thenComparingInt(pos -> pos.getZ() - origin.getZ())
+                    .thenComparingInt(pos -> pos.getX() - origin.getX());
+        }
+
+        private void addNeighbours(BlockPos pos) {
+            frontier.addAll(collectNeighbours(pos));
+        }
+
+        private List<BlockPos> collectNeighbours(BlockPos pos) {
+            List<BlockPos> added = new ArrayList<>(8);
+            for (BlockPos neighbour : InteractArea.neighbours(pos)) {
+                if (neighbour.getY() != pos.getY() || !seen.add(neighbour)
+                        || !level.isInWorldBounds(neighbour) || !valid.test(neighbour)) {
+                    continue;
+                }
+                added.add(neighbour);
+            }
+            return added;
         }
 
         private void tick() {
@@ -949,19 +1035,32 @@ public final class ChainEvents {
                 finish();
                 return;
             }
+            // A tool that broke or was swapped out ends the job instead of acting with something the
+            // player no longer holds.
+            if (!harvest && !toolStillHeld()) {
+                finish();
+                return;
+            }
 
             int processed = 0;
             int counted = 0;
-            while (!targets.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK
-                    && HELD_KEYS.contains(player.getUUID())) {
+            while (!frontier.isEmpty() && processed < INTERACT_BLOCKS_PER_TICK
+                    && processedCount < INTERACT_BLOCK_LIMIT && HELD_KEYS.contains(player.getUUID())) {
                 processed++;
-                if (interactOne(level, player, targets.poll())) {
+                BlockPos pos = frontier.poll();
+                // A candidate whose state changed while it waited is skipped and, because only
+                // applied positions spread, it does not carry the chain further either.
+                if (!valid.test(pos)) {
+                    continue;
+                }
+                if (interactOne(level, player, pos, face)) {
                     processedCount++;
                     counted++;
+                    addNeighbours(pos);
                 }
                 // A consumed seed stack or a broken tool ends the chain. Harvesting never uses up
                 // the held item, and is usually done bare handed, so it must not stop there.
-                if (!harvest && player.getMainHandItem().isEmpty()) {
+                if (!harvest && !toolStillHeld()) {
                     break;
                 }
             }
@@ -970,9 +1069,16 @@ public final class ChainEvents {
                 showInteractProgress(player, processedCount);
             }
 
-            if (targets.isEmpty()) {
+            if (frontier.isEmpty() || !toolStillHeld() && !harvest || processedCount >= INTERACT_BLOCK_LIMIT) {
                 finish();
             }
+        }
+
+        // The job runs over several ticks, so the held item is compared on every tick: a tool that
+        // broke mid-chain, or a hotbar slot switch, stops the job where it stands. Only the item is
+        // compared: using a tool changes its damage, which must not end the job.
+        private boolean toolStillHeld() {
+            return player.getMainHandItem().getItem() == tool.getItem();
         }
 
         private void finish() {
@@ -1404,6 +1510,12 @@ public final class ChainEvents {
     // Marks a break our handler has already seen in this tick, so the drop event that follows it
     // is not mistaken for one generated before the handler ran.
     private record HandledBreak(BlockPos pos, long gameTime) {
+    }
+
+    // A flint and steel click whose vanilla action has not run yet. The face is kept so the chained
+    // positions are ignited against the same side the player clicked.
+    private record PendingFireStart(ServerLevel level, BlockPos pos, Direction face, BlockState state,
+            InteractAction action) {
     }
 
     // Mutable and reused: a chain owns one instance and points it at the block being broken now.
