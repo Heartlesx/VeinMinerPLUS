@@ -17,6 +17,9 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 minecraft {
     mappings channel: 'official', version: minecraft_version
     copyIdeResources = true
+    // LineStateShard is protected; the preview needs it to ask for a one-pixel line width, the
+    // same way vanilla's own LINES type asks for the window-scaled one.
+    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
 
     runs {
         client {
