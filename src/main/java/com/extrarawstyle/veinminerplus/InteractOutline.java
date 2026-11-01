@@ -1,6 +1,8 @@
 package com.extrarawstyle.veinminerplus;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -9,11 +11,10 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
 
-// Draws one outline around the selected area instead of a full box per block. A horizontal edge is
-// only drawn where the neighbour on that side is not part of the selection, which removes the
-// internal lines between touching blocks; positions that touch only at a corner keep their own
-// outlines and meet at that corner, and a gap or a hole is followed as the real boundary instead of
-// the enclosing rectangle. A single selected block still comes out as a complete cube.
+// Draws one outline around the selected area instead of a full box per block. An edge is drawn
+// only where the surface or grid line is on the boundary of the three-dimensional selection, which
+// removes internal lines between touching blocks. Positions that touch only at an edge or corner
+// keep their real outlines, and a gap or hole is followed instead of the enclosing box.
 final class InteractOutline {
     private InteractOutline() {
     }
@@ -64,16 +65,36 @@ final class InteractOutline {
         return edges;
     }
 
-    // The area boundary, as unit-length edges on the block grid. Horizontal edges live on the top or
-    // the bottom of the layer; vertical edges live on a lattice corner.
+    // A one-block-tall area keeps the shipped flat-outline algorithm verbatim; only multi-layer
+    // areas need the three-dimensional boundary.
     private static Set<Edge> boundaryEdges(Set<BlockPos> area) {
+        if (isSingleLayer(area)) {
+            return flatBoundaryEdges(area);
+        }
+        return volumeBoundaryEdges(area);
+    }
+
+    private static boolean isSingleLayer(Set<BlockPos> area) {
+        int y = Integer.MIN_VALUE;
+        for (BlockPos pos : area) {
+            if (y == Integer.MIN_VALUE) {
+                y = pos.getY();
+            } else if (pos.getY() != y) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The flat outline: top and bottom rims where the horizontal neighbour is missing, plus a
+    // vertical edge at every rim corner. Preserved verbatim so single-layer previews stay identical.
+    private static Set<Edge> flatBoundaryEdges(Set<BlockPos> area) {
         Set<Edge> edges = new HashSet<>();
         for (BlockPos pos : area) {
             int x = pos.getX();
             int y = pos.getY();
             int z = pos.getZ();
 
-            // Top and bottom faces, one edge per side that has no neighbour in the area.
             for (Direction2 side : HORIZONTAL) {
                 if (area.contains(new BlockPos(x + side.dx, y, z + side.dz))) {
                     continue;
@@ -84,8 +105,6 @@ final class InteractOutline {
                 edges.add(new Edge(from[0], y, from[1], to[0], y, to[1]));
             }
 
-            // Vertical edges, one per boundary corner of this block. A corner is interior when all
-            // four blocks meeting there belong to the area, which is the only case worth skipping.
             for (int dx = 0; dx <= 1; dx++) {
                 for (int dz = 0; dz <= 1; dz++) {
                     int cx = x + dx;
@@ -101,6 +120,61 @@ final class InteractOutline {
             }
         }
         return edges;
+    }
+
+    // The volume boundary is the rim of the exposed faces in all three axes. An edge shared by two
+    // coplanar exposed faces is an internal seam and is dropped; an edge on one exposed face only,
+    // or shared by perpendicular faces, is part of the real surface and stays.
+    private static Set<Edge> volumeBoundaryEdges(Set<BlockPos> area) {
+        Map<FaceEdge, Integer> counts = new HashMap<>();
+        for (BlockPos pos : area) {
+            for (int axis = 0; axis < 3; axis++) {
+                int u = (axis + 1) % 3;
+                int v = (axis + 2) % 3;
+                for (int direction = -1; direction <= 1; direction += 2) {
+                    if (area.contains(offset(pos, axis, direction))) {
+                        continue;
+                    }
+                    int normal = axis * 2 + (direction == 1 ? 1 : 0);
+                    int[][] corners = new int[4][3];
+                    for (int index = 0; index < 4; index++) {
+                        corners[index][axis] = coordinate(pos, axis) + (direction == 1 ? 1 : 0);
+                        corners[index][u] = coordinate(pos, u) + (index == 1 || index == 2 ? 1 : 0);
+                        corners[index][v] = coordinate(pos, v) + (index >= 2 ? 1 : 0);
+                    }
+                    for (int index = 0; index < 4; index++) {
+                        int[] from = corners[index];
+                        int[] to = corners[(index + 1) % 4];
+                        counts.merge(new FaceEdge(new GridEdge(from[0], from[1], from[2],
+                                to[0], to[1], to[2]), normal), 1, Integer::sum);
+                    }
+                }
+            }
+        }
+        Set<Edge> edges = new HashSet<>();
+        for (Map.Entry<FaceEdge, Integer> entry : counts.entrySet()) {
+            if (entry.getValue() == 1) {
+                GridEdge edge = entry.getKey().edge();
+                edges.add(new Edge(edge.x0(), edge.y0(), edge.z0(), edge.x1(), edge.y1(), edge.z1()));
+            }
+        }
+        return edges;
+    }
+
+    private static int coordinate(BlockPos pos, int axis) {
+        return switch (axis) {
+            case 0 -> pos.getX();
+            case 1 -> pos.getY();
+            default -> pos.getZ();
+        };
+    }
+
+    private static BlockPos offset(BlockPos pos, int axis, int amount) {
+        return switch (axis) {
+            case 0 -> pos.offset(amount, 0, 0);
+            case 1 -> pos.offset(0, amount, 0);
+            default -> pos.offset(0, 0, amount);
+        };
     }
 
     private static void emit(PoseStack.Pose pose, VertexConsumer lines, Edge edge, Vec3 camera,
@@ -131,9 +205,6 @@ final class InteractOutline {
     // One straight piece of the boundary, in block-grid coordinates. Kept in double: the camera
     // offset has to be subtracted before anything turns into a float, or far-away coordinates lose
     // the fraction and the outline jumps by whole blocks as the camera moves.
-    private record Edge(double x0, double y0, double z0, double x1, double y1, double z1) {
-    }
-
     private enum Direction2 {
         WEST(-1, 0),
         EAST(1, 0),
@@ -170,4 +241,27 @@ final class InteractOutline {
     }
 
     static final Direction2[] HORIZONTAL = Direction2.values();
+
+    private record FaceEdge(GridEdge edge, int normal) {
+    }
+
+    private record GridEdge(int x0, int y0, int z0, int x1, int y1, int z1) {
+        GridEdge {
+            if (x0 > x1 || x0 == x1 && (y0 > y1 || y0 == y1 && z0 > z1)) {
+                int x = x0;
+                int y = y0;
+                int z = z0;
+                x0 = x1;
+                y0 = y1;
+                z0 = z1;
+                x1 = x;
+                y1 = y;
+                z1 = z;
+            }
+        }
+    }
+
+    private record Edge(double x0, double y0, double z0, double x1, double y1, double z1) {
+    }
+
 }

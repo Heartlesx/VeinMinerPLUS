@@ -77,9 +77,9 @@ public final class ChainEvents {
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
     private static final int SPARSE_SCANS_PER_TICK = 256;
     private static final int PENDING_SEED_LIMIT = 256;
-    // The interaction mode grows a square outward from the clicked block, one ring per step,
-    // and only keeps positions the held item could actually be used on. Vanilla's useOn stays
-    // the final gate when a position is processed.
+    // The interaction mode grows outward from the clicked block through face, edge and corner
+    // contact, and only keeps positions the held item could actually be used on. Vanilla's useOn
+    // stays the final gate when a position is processed.
     private static final int INTERACT_BLOCK_LIMIT = 1024;
     private static final int INTERACT_MAX_RADIUS = 16;
     private static final int INTERACT_BLOCKS_PER_TICK = 64;
@@ -980,8 +980,7 @@ public final class ChainEvents {
         private final Direction face;
         private final ItemStack tool;
         private final Predicate<BlockPos> valid;
-        // Nearer positions are handled first; a position reached later is queued after everything
-        // already waiting, which keeps the radius ordering of the old selection.
+        // Nearer positions are handled first, including those above and below the clicked block.
         private final PriorityQueue<BlockPos> frontier;
         private final Set<BlockPos> seen = new HashSet<>();
         private int processedCount;
@@ -1018,10 +1017,9 @@ public final class ChainEvents {
         }
 
         private List<BlockPos> collectNeighbours(BlockPos pos) {
-            List<BlockPos> added = new ArrayList<>(8);
+            List<BlockPos> added = new ArrayList<>(26);
             for (BlockPos neighbour : InteractArea.neighbours(pos)) {
-                if (neighbour.getY() != pos.getY() || !seen.add(neighbour)
-                        || !level.isInWorldBounds(neighbour) || !valid.test(neighbour)) {
+                if (!seen.add(neighbour) || !level.isInWorldBounds(neighbour) || !valid.test(neighbour)) {
                     continue;
                 }
                 added.add(neighbour);
