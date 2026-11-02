@@ -64,7 +64,13 @@ public final class ChainEvents {
     // Work is deliberately bounded so one large blast cannot monopolize the server thread.
     private static final int SEARCH_CHECKS_PER_TICK = 16384;
     private static final int SEARCH_CHECKS_PER_CENTER = 256;
-    private static final int SPARSE_SCANS_PER_TICK = 256;
+    // Every successful sparse break adds a centre to expand, so the budget has to exceed the
+    // break limit or the backlog only ever grows. The ceiling bounds the worst case.
+    private static final int SPARSE_CENTERS_PER_BREAK = 2;
+    private static final int SPARSE_CENTER_LIMIT = 1024;
+    // Soft per-tick budget for sparse scanning only. Centre cost grows with the search
+    // distance, so a centre count alone does not bound the work.
+    private static final long SPARSE_SCAN_BUDGET_NANOS = 5_000_000L;
     // One player action can break a whole area through a tool of another mod, and every block of
     // it arrives as its own break event. The positions are collected up to this many.
     private static final int PENDING_SEED_LIMIT = 256;
@@ -1282,6 +1288,10 @@ public final class ChainEvents {
         private final ChainMode mode;
         private final Set<BlockPos> examined = new HashSet<>();
         private final Deque<SearchNode> frontier = new ArrayDeque<>();
+        // Blast graph search keeps a second, 26-offset queue. Walking one centre's whole
+        // radius-R offset list spends nearly all of it on positions already examined, so the
+        // near queue supplies neighbours cheaply while the radius-R queue still crosses gaps.
+        private final Deque<SearchNode> nearQueue = new ArrayDeque<>();
         private final Deque<BlockPos> sparseCenters = new ArrayDeque<>();
         private final PriorityQueue<SparseTarget> sparseTargets;
         // Section key -> matching positions inside that 16x16x16 section. Bucketing matters: a
@@ -1400,12 +1410,41 @@ public final class ChainEvents {
         }
 
         private void tickGraph() {
+            int checkLimit = mode.isBlast() ? effectiveBlastSearchChecks() : SEARCH_CHECKS_PER_TICK;
+            int breakLimit = mode.isBlast() ? effectiveBlastBreakLimit() : Config.maxNormalBlocksPerTick;
+
+            if (!mode.isBlast()) {
+                tickGraphSingleQueue(checkLimit, breakLimit);
+                return;
+            }
+
+            GraphTick tick = new GraphTick(breakLimit);
+
+            // Stage 1: a small radius-R quota so the far queue is never starved.
+            tick.runQueue(frontier, graphOffsets, Math.min(checkLimit / 8, 2048), false);
+
+            // Near-first interleave: the near queue is always drained first; only when it runs
+            // dry does the far queue advance, and it yields back as soon as a break feeds the
+            // near queue again.
+            while (tick.checks < checkLimit && tick.breaks < breakLimit
+                    && brokenCount < totalLimit) {
+                int remaining = checkLimit - tick.checks;
+                if (!nearQueue.isEmpty()) {
+                    tick.runQueue(nearQueue, NORMAL_OFFSETS, remaining, false);
+                } else if (!frontier.isEmpty()) {
+                    tick.runQueue(frontier, graphOffsets, remaining, true);
+                } else {
+                    break;
+                }
+            }
+
+            tick.complete(tick.isExhausted());
+        }
+
+        // Non-blast modes: the original single-queue walk, unchanged.
+        private void tickGraphSingleQueue(int checkLimit, int breakLimit) {
             int checks = 0;
             int breaks = 0;
-            int checkLimit = mode.isBlast() ? effectiveBlastSearchChecks() : SEARCH_CHECKS_PER_TICK;
-            // Every non-blast mode shares the normal per-tick budget on purpose: one knob tunes
-            // normal chains and both area sizes alike.
-            int breakLimit = mode.isBlast() ? effectiveBlastBreakLimit() : Config.maxNormalBlocksPerTick;
             while (checks < checkLimit && breaks < breakLimit
                     && !frontier.isEmpty() && brokenCount < totalLimit) {
                 SearchNode node = frontier.removeFirst();
@@ -1437,6 +1476,79 @@ public final class ChainEvents {
             }
 
             afterTick(breaks, frontier.isEmpty() || brokenCount >= totalLimit);
+        }
+
+        // One tick's worth of graph work. Both queues share the task-level examined set and the
+        // per-tick break/check counters, so a duplicate keeps costing budget no matter which
+        // queue produced it.
+        private final class GraphTick {
+            private final int breakLimit;
+            private int checks;
+            private int breaks;
+
+            private GraphTick(int breakLimit) {
+                this.breakLimit = breakLimit;
+            }
+
+            private boolean canContinue() {
+                return brokenCount < totalLimit;
+            }
+
+            // stopOnNearGain: leave as soon as a break puts new work in the near queue, so the
+            // cheap queue regains priority instead of the far queue running to the end.
+            private void runQueue(Deque<SearchNode> queue, List<BlockPos> offsets, int budget,
+                    boolean stopOnNearGain) {
+                if (budget <= 0) {
+                    return;
+                }
+                int startChecks = checks;
+                while (checks - startChecks < budget && breaks < breakLimit && canContinue()
+                        && !queue.isEmpty()) {
+                    SearchNode node = queue.removeFirst();
+                    int centerChecks = 0;
+                    while (centerChecks < SEARCH_CHECKS_PER_CENTER
+                            && checks - startChecks < budget
+                            && breaks < breakLimit
+                            && canContinue()
+                            && node.nextOffset < offsets.size()) {
+                        BlockPos offset = offsets.get(node.nextOffset);
+                        node.nextOffset++;
+                        BlockPos candidate = node.position.add(offset.getX(), offset.getY(), offset.getZ());
+                        checks++;
+                        centerChecks++;
+                        if (!examined.add(candidate) || !level.isValid(candidate)) {
+                            continue;
+                        }
+
+                        IBlockState state = getBlockStateForSearch(candidate);
+                        if (isEligible(level, player, candidate, state, targetBlock, targetVariant, mode)
+                                && breakOne(level, player, candidate, state)) {
+                            brokenCount++;
+                            breaks++;
+                            // A successful break is the only thing that may become a new centre.
+                            nearQueue.addLast(new SearchNode(candidate, 0));
+                            frontier.addLast(new SearchNode(candidate, 0));
+                            if (stopOnNearGain) {
+                                if (node.nextOffset < offsets.size()) {
+                                    queue.addFirst(node);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    if (node.nextOffset < offsets.size()) {
+                        queue.addLast(node);
+                    }
+                }
+            }
+
+            private boolean isExhausted() {
+                return frontier.isEmpty() && nearQueue.isEmpty();
+            }
+
+            private void complete(boolean exhausted) {
+                afterTick(breaks, exhausted || brokenCount >= totalLimit);
+            }
         }
 
         private void tickArea() {
@@ -1476,18 +1588,31 @@ public final class ChainEvents {
             boolean extreme = mode.isExtremeBlast();
             int breaks = 0;
             int scannedCenters = 0;
+            long scanNanos = 0L;
             // An extreme blast is deliberately unthrottled: the whole chain finishes inside this tick.
             int breakLimit = extreme ? Integer.MAX_VALUE : effectiveBlastBreakLimit();
-            // While targets are queued no scanning happens, so a finished vein can leave a
-            // large backlog of centres behind and every one of them would be walked in a
-            // single tick. Capping the number walked per tick bounds that worst case; the
-            // remainder is simply handled on the following ticks.
+            // Every successful break adds a centre, so with the old 256 cap against a 512 break
+            // limit the backlog could only grow. Two centres per allowed break leaves room for
+            // empty scans and backlog drain; the 1024 ceiling keeps the worst case bounded.
             int centerLimit = extreme ? Integer.MAX_VALUE
-                    : Math.min(Math.max(1, breakLimit), SPARSE_SCANS_PER_TICK);
+                    : Math.min(SPARSE_CENTER_LIMIT, Math.max(1, breakLimit * SPARSE_CENTERS_PER_BREAK));
+            // Scanning is the expensive part and its cost per centre grows with the search
+            // distance, so the centre count alone is not a sufficient bound. This soft budget
+            // covers scanSparseCenter only; breakOne and drops are excluded.
+            long scanBudgetNanos = extreme ? Long.MAX_VALUE / 4 : sparseScanBudgetNanos();
+            boolean scanBudgetSpent = false;
             while (breaks < breakLimit && brokenCount < totalLimit) {
-                while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit) {
+                while (sparseTargets.isEmpty() && !sparseCenters.isEmpty() && scannedCenters < centerLimit
+                        && !scanBudgetSpent) {
+                    long scanStarted = System.nanoTime();
                     scanSparseCenter(sparseCenters.removeFirst());
+                    scanNanos += System.nanoTime() - scanStarted;
                     scannedCenters++;
+                    // Checked after each centre: a single centre can still overshoot, the budget
+                    // only bounds how many are started.
+                    if (scanNanos >= scanBudgetNanos) {
+                        scanBudgetSpent = true;
+                    }
                 }
                 if (sparseTargets.isEmpty()) {
                     break;
@@ -1505,6 +1630,12 @@ public final class ChainEvents {
 
             afterTick(breaks, sparseTargets.isEmpty() && sparseCenters.isEmpty()
                     || brokenCount >= totalLimit);
+        }
+
+        // The scan time budget shrinks with the same TPS scaling the check budget uses.
+        private long sparseScanBudgetNanos() {
+            int effective = effectiveBlastSearchChecks();
+            return SPARSE_SCAN_BUDGET_NANOS * effective / SEARCH_CHECKS_PER_TICK;
         }
 
         private void afterTick(int breaks, boolean exhausted) {
@@ -1570,6 +1701,7 @@ public final class ChainEvents {
             }
             return SEARCH_CHECKS_PER_TICK;
         }
+
 
         // 1.12.2 has no Chunk.findBlocks, so a section is walked once and its matching positions
         // are kept for every later centre that reaches into it. Positions outside the sphere stay
