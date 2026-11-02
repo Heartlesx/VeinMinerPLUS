@@ -17,6 +17,8 @@ import java.util.function.Predicate;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -1097,7 +1099,12 @@ public final class ChainEvents {
         private final Block targetBlock;
         private final Direction face;
         private final ChainMode mode;
-        private final Set<BlockPos> examined = new HashSet<>();
+        // Visited positions are kept as packed longs. Nothing else about scheduling changes: every
+        // raw offset still consumes a check before this lookup, so the per-tick budget still bounds
+        // the work. BlockPos.asLong packs 26/12/26 bits, which covers the whole legal world
+        // (+/-30M horizontally, -2048..2047 vertically) without truncating, so two distinct in-world
+        // positions can never collide here.
+        private final LongSet examined = new LongOpenHashSet();
         private final Deque<SearchNode> frontier = new ArrayDeque<>();
         // Blast graph search keeps a second, 26-offset queue. Walking one centre's whole
         // radius-R offset list spends nearly all of it on positions already examined, so the
@@ -1137,9 +1144,6 @@ public final class ChainEvents {
             this.capture = new CaptureContext(drops);
             this.totalLimit = mode.isBlast() ? Config.MAX_BLAST_BLOCKS.getAsInt() : Config.MAX_NORMAL_BLOCKS.getAsInt();
             this.areaDepthLimit = Config.MAX_NORMAL_BLOCKS.getAsInt();
-            this.graphOffsets = mode.isBlast()
-                    ? BLAST_OFFSETS.computeIfAbsent(Config.BLAST_SEARCH_DISTANCE.getAsInt(), ChainEvents::createBlastOffsets)
-                    : NORMAL_OFFSETS;
             BlockState targetState = targetBlock.defaultBlockState();
             // An extreme blast always scans by chunk: one palette pass beats the graph's
             // per-node offset walks for every block type, not just the scattered veins.
@@ -1147,6 +1151,11 @@ public final class ChainEvents {
                     || mode == ChainMode.BLAST_ORES
                     || mode == ChainMode.BLAST_LOGS
                     || mode == ChainMode.BLAST_SAME && (isOre(targetState) || targetState.is(BlockTags.LOGS));
+            // Built only after the path is known. A sparse or extreme blast never walks the
+            // radius-R table, and at distance 32 that table holds 137064 offsets plus their sort.
+            this.graphOffsets = !mode.isBlast() || sparseBlast ? NORMAL_OFFSETS
+                    : BLAST_OFFSETS.computeIfAbsent(Config.BLAST_SEARCH_DISTANCE.getAsInt(),
+                            ChainEvents::createBlastOffsets);
             this.sparseTargets = new PriorityQueue<>(Comparator
                     .comparingLong((BlockPos pos) -> squaredDistance(origin, pos))
                     .thenComparingInt(BlockPos::getY)
@@ -1159,7 +1168,7 @@ public final class ChainEvents {
                 starts.addAll(seeds);
             }
             for (BlockPos start : starts) {
-                if (!examined.add(start)) {
+                if (!examined.add(start.asLong())) {
                     continue;
                 }
                 loadedChunks.put(chunkKey(start), level.getChunk(start.getX() >> 4, start.getZ() >> 4));
@@ -1250,7 +1259,7 @@ public final class ChainEvents {
                     BlockPos candidate = node.position().offset(offset.getX(), offset.getY(), offset.getZ());
                     checks++;
                     centerChecks++;
-                    if (!examined.add(candidate) || !level.isInWorldBounds(candidate)) {
+                    if (!examined.add(candidate.asLong()) || !level.isInWorldBounds(candidate)) {
                         continue;
                     }
 
@@ -1310,12 +1319,19 @@ public final class ChainEvents {
                             && node.nextOffset() < offsets.size()) {
                         BlockPos offset = offsets.get(node.nextOffset());
                         node.advance();
-                        BlockPos candidate = node.position().offset(offset.getX(), offset.getY(), offset.getZ());
                         checks++;
                         centerChecks++;
-                        if (!examined.add(candidate) || !level.isInWorldBounds(candidate)) {
+                        // The position is tested as raw coordinates first: offsetting a BlockPos
+                        // allocates one object per (centre, offset) pair, and on a blast almost all
+                        // of those are rejected here as already examined or out of bounds.
+                        BlockPos nodePos = node.position();
+                        int x = nodePos.getX() + offset.getX();
+                        int y = nodePos.getY() + offset.getY();
+                        int z = nodePos.getZ() + offset.getZ();
+                        if (!examined.add(packedPos(x, y, z)) || !isWithinWorldHeight(level, y)) {
                             continue;
                         }
+                        BlockPos candidate = new BlockPos(x, y, z);
 
                         BlockState state = getBlockStateForSearch(level, candidate, loadedChunks);
                         if (isEligible(level, player, candidate, state, targetBlock, mode, harvestCache)
@@ -1377,7 +1393,7 @@ public final class ChainEvents {
                 areaIndex++;
                 // The hit face points back toward the player. Advance into the block instead.
                 BlockPos candidate = areaOffset(origin, face, first, second).relative(face.getOpposite(), areaDepth);
-                if (!level.isInWorldBounds(candidate) || !examined.add(candidate)) {
+                if (!level.isInWorldBounds(candidate) || !examined.add(candidate.asLong())) {
                     continue;
                 }
 
@@ -1571,7 +1587,7 @@ public final class ChainEvents {
 
                             matches.set(index, matches.get(matches.size() - 1));
                             matches.remove(matches.size() - 1);
-                            if (examined.add(pos)) {
+                            if (examined.add(pos.asLong())) {
                                 sparseTargets.add(pos);
                             }
                         }
@@ -1623,6 +1639,18 @@ public final class ChainEvents {
 
     private static long chunkKey(int chunkX, int chunkZ) {
         return ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
+    }
+
+    // Same bit layout as BlockPos.asLong, without allocating a BlockPos only to call it.
+    private static long packedPos(int x, int y, int z) {
+        return ((long) (x & 0x3FFFFFF) << 38) | ((long) (y & 0xFFF) << 26) | (z & 0x3FFFFFF);
+    }
+
+    // Only the vertical range is checked here. The horizontal extent is left to the per-chunk
+    // loading that follows, so this stays permissive instead of truncating anything.
+    private static boolean isWithinWorldHeight(Level level, int y) {
+        var type = level.dimensionType();
+        return y >= type.minY() - 1 && y <= type.minY() + type.height() + 1;
     }
 
     private static long squaredDistance(BlockPos first, BlockPos second) {

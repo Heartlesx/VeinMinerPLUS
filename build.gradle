@@ -132,6 +132,14 @@ dependencies {
     // Curios is optional as well: it is only read to find a card worn in a trinket slot.
     compileOnly "top.theillusivec4.curios:curios-neoforge:${curios_version}:api"
 
+    // Optional compatibility targets. These are compile-time only: the patches are written against
+    // the exact versions below and stay inert when those mods are absent, so nothing of them ships
+    // and none of them becomes a hard dependency.
+    compileOnly files("libs/compat/architectury-13.0.11-neoforge.jar")
+    compileOnly files("libs/compat/curios-neoforge-9.5.1+1.21.1.jar")
+    compileOnly files("libs/compat/hostilenetworks-6.5.1.jar")
+    compileOnly files("libs/compat/fastleafdecay-35.jar")
+
     // Refined Storage is optional too: the official API jar set is vendored under libs/rs-api so the
     // storage binder can reach an RS network without a Maven artifact for it.
     compileOnly files(

@@ -41,3 +41,7 @@ mods/
 repo/
 !**/src/**/repo/
 temp/
+
+# Third-party jars the optional compatibility patches compile against. They are never bundled into
+# the built mod; see libs/compat/README.md for which mods to download and where to put them.
+libs/compat/*.jar

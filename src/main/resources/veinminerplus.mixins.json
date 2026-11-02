@@ -1,0 +1,17 @@
+{
+    "required": false,
+    "minVersion": "0.8",
+    "package": "com.extrarawstyle.veinminerplus.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "mixins": [
+        "ArchitecturyDispatchMixin",
+        "HostileCuriosLookupMixin",
+        "FastLeafDecaySchedulerMixin"
+    ],
+    "client": [],
+    "server": [],
+    "injectors": {
+        "defaultRequire": 1
+    },
+    "plugin": "com.extrarawstyle.veinminerplus.mixin.VeinMinerPlusMixinPlugin"
+}

@@ -60,6 +60,12 @@ Server-authoritative chain mining for Minecraft 1.21.1 NeoForge.
 
 # The coremods config file path is not configurable and is always loaded from META-INF/coremods.json
 
+# Mixin configuration for the optional third-party compatibility patches. Each patch is gated to
+# the exact mod version it was written against and stays inert when that version is absent.
+[[mixins]]
+config="veinminerplus.mixins.json"
+
+
 # A dependency - use the . to indicate dependency for a specific modid. Dependencies are optional.
 [[dependencies.${mod_id}]] #optional
     # the modid of the dependency
