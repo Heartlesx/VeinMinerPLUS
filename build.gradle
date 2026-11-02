@@ -124,6 +124,25 @@ configurations {
     runtimeClasspath.extendsFrom localRuntime
 }
 
+// The compatibility patches compile against other mods' bytecode, which is never redistributed with
+// this repository: libs/compat/README.md says which jars to download. When they are absent - as on a
+// clean CI checkout - the two packages are dropped from the source set and their dependencies are
+// skipped, so  still validates everything else. A jar built that way simply has no
+// compatibility patches; every release jar is built locally with the jars present.
+def compatJars = [
+        "libs/compat/architectury-13.0.11-neoforge.jar",
+        "libs/compat/curios-neoforge-9.5.1+1.21.1.jar",
+        "libs/compat/hostilenetworks-6.5.1.jar",
+        "libs/compat/fastleafdecay-35.jar",
+]
+def compatPresent = compatJars.every { file(it).exists() }
+if (!compatPresent) {
+    logger.lifecycle("libs/compat jars missing: building without the compatibility patches.")
+    sourceSets.main.java.exclude 'com/extrarawstyle/veinminerplus/mixin/**'
+    sourceSets.main.java.exclude 'com/extrarawstyle/veinminerplus/compat/**'
+    sourceSets.main.resources.exclude 'veinminerplus.mixins.json'
+}
+
 dependencies {
     // AE2 is an optional dependency: only its API jar is needed to compile the storage routing,
     // and nothing of it is shipped or required at runtime.
@@ -135,10 +154,9 @@ dependencies {
     // Optional compatibility targets. These are compile-time only: the patches are written against
     // the exact versions below and stay inert when those mods are absent, so nothing of them ships
     // and none of them becomes a hard dependency.
-    compileOnly files("libs/compat/architectury-13.0.11-neoforge.jar")
-    compileOnly files("libs/compat/curios-neoforge-9.5.1+1.21.1.jar")
-    compileOnly files("libs/compat/hostilenetworks-6.5.1.jar")
-    compileOnly files("libs/compat/fastleafdecay-35.jar")
+    if (compatPresent) {
+        compatJars.each { compileOnly files(it) }
+    }
 
     // Refined Storage is optional too: the official API jar set is vendored under libs/rs-api so the
     // storage binder can reach an RS network without a Maven artifact for it.
@@ -189,9 +207,22 @@ var generateModMetadata = tasks.register("generateModMetadata", ProcessResources
             mod_version            : mod_version,
     ]
     inputs.properties replaceProperties
+    inputs.property 'compatPatches', compatPresent
     expand replaceProperties
     from "src/main/templates"
     into "build/generated/sources/modMetadata"
+    // Without the compat jars the mixin config is not packaged, so the declaration has to go too:
+    // a mods.toml naming a config that does not exist fails at load time.
+    if (!compatPresent) {
+        // Drop the whole [[mixins]] block, not just its config line, or an empty table is left
+        // behind and the loader rejects the file.
+        filter { String line ->
+            if (line.trim() == '[[mixins]]') return null
+            if (line.contains('veinminerplus.mixins.json')) return null
+            if (line.startsWith('config=')) return null
+            return line
+        }
+    }
 }
 // Include the output of "generateModMetadata" as an input directory for the build
 // this works with both building through Gradle and the IDE.
