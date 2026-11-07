@@ -1,0 +1,2 @@
+ok   shipped SparseSectionGeometry matches the harness copy  [16003008 cases]
+all geometry cross-checks passed

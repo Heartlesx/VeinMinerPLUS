@@ -1,0 +1,17 @@
+{
+    "required": true,
+    "minVersion": "0.8",
+    "package": "com.extrarawstyle.veinminerplus.mixin",
+    "compatibilityLevel": "JAVA_17",
+    "mixins": [
+        "ServerPlayerGameModeMixin",
+        "ArchitecturyDispatchMixin",
+        "DelightfulEnabledConditionMixin"
+    ],
+    "client": [],
+    "server": [],
+    "injectors": {
+        "defaultRequire": 1
+    },
+    "plugin": "com.extrarawstyle.veinminerplus.mixin.VeinMinerPlusMixinPlugin"
+}

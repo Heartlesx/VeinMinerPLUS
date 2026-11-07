@@ -59,6 +59,12 @@ dependencies {
     // API-only jars, used at compile time and never shipped: the mod still loads without them.
     compileOnly fg.deobf("appeng:appliedenergistics2-forge:${ae2_version}:api")
     compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:${curios_version}:api")
+
+    // Optional compatibility targets. These are compile-time only: the patches are written against
+    // the exact versions below, stay inert when those mods are absent or differ, and nothing of them
+    // ships. libs/compat/README.md says which jars to put there.
+    compileOnly files("libs/compat/architectury-9.2.14-forge.jar")
+    compileOnly files("libs/compat/Delightful-1.20.1-3.7.6.jar")
 }
 
 tasks.named('processResources', ProcessResources).configure {
@@ -87,7 +93,11 @@ tasks.named('jar', Jar).configure {
                 'Specification-Version': '1',
                 'Implementation-Title': project.name,
                 'Implementation-Version': project.jar.archiveVersion,
-                'Implementation-Vendor': mod_authors
+                'Implementation-Vendor': mod_authors,
+                // Forge reads mixin configs from this manifest attribute. NeoForge also accepts a
+                // [[mixins]] block in the mod metadata, which mods.toml carries, but Forge 1.20.1
+                // does not, so both are declared and either loader picks the config up.
+                'MixinConfigs': 'veinminerplus.mixins.json'
         ])
     }
     finalizedBy 'reobfJar'

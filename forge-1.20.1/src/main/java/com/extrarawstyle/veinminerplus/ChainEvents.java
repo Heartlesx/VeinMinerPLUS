@@ -57,6 +57,7 @@ import net.minecraft.world.level.block.SweetBerryBushBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.ToolActions;
@@ -68,6 +69,8 @@ import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+
+import com.extrarawstyle.veinminerplus.compat.RemoveObservation;
 
 public final class ChainEvents {
     // Work is deliberately bounded so one large blast cannot monopolize the server thread.
@@ -89,11 +92,8 @@ public final class ChainEvents {
     private static final int INTERACT_BLOCKS_PER_TICK = 64;
     // The preview shows the same reach the server job uses, so a large area is not silently cut off.
     static final int INTERACT_PREVIEW_LIMIT = INTERACT_BLOCK_LIMIT;
-    private static final double TPS_WARNING_THRESHOLD = 12.0D;
     private static final double TPS_CRITICAL_THRESHOLD = 8.0D;
-    private static final double TPS_RECOVERY_THRESHOLD = 16.0D;
     private static final int TPS_CRITICAL_TICKS_TO_STOP = 20;
-    private static final int TPS_WARNING_COOLDOWN_TICKS = 100;
 
     private static final TagKey<Block> ORE_BLOCKS = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath("minecraft", "ores"));
@@ -118,6 +118,9 @@ public final class ChainEvents {
     private static final Map<UUID, DropBuffer> PENDING_DROPS = new HashMap<>();
     private static final Map<UUID, BlockPos> PENDING_DROP_ORIGINS = new HashMap<>();
     private static final Map<UUID, Boolean> PENDING_DOUBLE_PLANTS = new HashMap<>();
+    // Logged once per server, so the active counting path is visible without spamming the log.
+    private static final java.util.concurrent.atomic.AtomicBoolean fallbackNotice =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private static final ThreadLocal<CaptureContext> CAPTURING_DROPS = new ThreadLocal<>();
     private static final Map<UUID, BreakFace> LAST_BREAK_FACES = new HashMap<>();
     private static final Map<UUID, List<BlockPos>> PENDING_SEEDS = new HashMap<>();
@@ -487,6 +490,13 @@ public final class ChainEvents {
         if (event.phase != TickEvent.Phase.END) {
             return;
         }
+        // This runs inside ForgeEventFactory.onPostServerTick, which MinecraftServer calls AFTER it
+        // has already stored this tick's duration and updated getAverageTickTime. So the server's
+        // own figure never includes any of the work below - a 90 ms chain tick still reads as 4 ms
+        // and "20 TPS" there. The interval measured here is the one that actually covers it.
+        long now = System.nanoTime();
+        ServerTickClock.observe(now);
+
         for (ChainJob job : new ArrayList<>(ACTIVE_JOBS.values())) {
             job.tick();
         }
@@ -644,16 +654,20 @@ public final class ChainEvents {
         if (job != null) {
             CAPTURING_DROPS.set(job.captureAt(pos, state));
         }
+        RemoveObservation.Attempt attempt = RemoveObservation.begin(level, player, pos);
         try {
-            float exhaustion = player.getFoodData().getExhaustionLevel();
-            boolean destroyed = isJustDireThingsTool(player)
+            boolean noHungerCost = Config.NO_HUNGER_COST.get();
+            float exhaustion = noHungerCost ? player.getFoodData().getExhaustionLevel() : 0.0F;
+            boolean isJdt = job != null ? job.isJustDireThingsTool() : isJustDireThingsTool(player);
+            boolean destroyed = isJdt
                     ? breakWithoutBreakEvent(level, player, pos, state)
                     : player.gameMode.destroyBlock(pos);
-            if (destroyed && Config.NO_HUNGER_COST.get()) {
+            if (destroyed && noHungerCost) {
                 player.getFoodData().setExhaustion(exhaustion);
             }
-            return destroyed;
+            return succeeds(attempt, destroyed, isJdt, job);
         } finally {
+            RemoveObservation.end(attempt);
             if (previous == null) {
                 CAPTURING_DROPS.remove();
             } else {
@@ -662,8 +676,92 @@ public final class ChainEvents {
         }
     }
 
-    // Just Dire Things listens to BlockEvent.BreakEvent, runs its own hammer area
-    // break there and cancels the event. Firing that event for a chained block would
+    // How one chained break's result was decided. The split matters because only the first is
+    // evidence of a real removal; the rest still keep old behaviour working but must never be
+    // counted toward a "512 really broken" claim.
+    private enum Outcome {
+        // The block's own removal call reported it removed.
+        VERIFIED,
+        // The removal call reported it stayed: a real failure.
+        REFUSED,
+        // The break was refused before any removal (a cancelled event, a game-master block, a tool
+        // that broke first). Not a success, and not evidence of anything.
+        REFUSED_BEFORE_REMOVAL,
+        // No observation was available and the old destroyBlock result was used. Runs only when the
+        // patch is not applied; it keeps the mod usable but cannot be called verified.
+        FALLBACK_SUCCESS,
+        FALLBACK_REFUSED,
+        // Just Dire Things: its own removal path already returns the real answer.
+        JDT
+    }
+
+    // Decides whether one chained break counts as a success, and records how it was decided.
+    //
+    // destroyBlock's own boolean is not the answer: vanilla's survival branch returns true even when
+    // its internal removeBlock reported that the block stayed, so a refused removal could be counted
+    // and could seed a new search centre.
+    //
+    // The three observed states are handled apart:
+    // - REMOVED: the main removal call reported the block removed, so it counts as verified.
+    // - NOT_REMOVED: the main call reported it stayed. It does not count.
+    // - UNOBSERVED: no removal reached this block. That is a normal refusal (a cancelled event, a
+    //   game-master block, a tool that broke first) whenever the patch is applied, so it does not
+    //   count. "No removal seen" is deliberately NOT read as "the patch is missing": those innocent
+    //   causes look identical from here, which is why the patch's own load-time flag decides.
+    //
+    // When the patch genuinely is not applied, the old destroyBlock result is used instead so the mod
+    // still works, but every such block is counted as a fallback and the job tells the player its
+    // counts are unverified.
+    //
+    // The Just Dire Things path bypasses destroyBlock entirely and has its own removal check, so it
+    // keeps using its own result and is reported separately.
+    private static boolean succeeds(RemoveObservation.Attempt attempt, boolean destroyed,
+            boolean isJdt, ChainJob job) {
+        RemoveObservation.State removal = RemoveObservation.stateOf(attempt);
+        boolean patchApplied = RemoveObservation.isPatchApplied();
+
+        Outcome outcome;
+        if (isJdt) {
+            outcome = Outcome.JDT;
+        } else if (removal == RemoveObservation.State.REMOVED) {
+            outcome = Outcome.VERIFIED;
+        } else if (removal == RemoveObservation.State.NOT_REMOVED) {
+            outcome = Outcome.REFUSED;
+        } else if (patchApplied) {
+            outcome = Outcome.REFUSED_BEFORE_REMOVAL;
+        } else {
+            outcome = destroyed ? Outcome.FALLBACK_SUCCESS : Outcome.FALLBACK_REFUSED;
+        }
+
+        noteObservationMode(job, patchApplied);
+        return switch (outcome) {
+            case VERIFIED, FALLBACK_SUCCESS, JDT -> true;
+            default -> false;
+        };
+    }
+
+    // Tells the player, once per server, when chained mining is counting on the fallback path.
+    //
+    // This is not a diagnostic-only message: the counts a fallback run reports are not verified
+    // removals, so the player has to be able to tell that state apart without enabling anything.
+    // It fires on the first chained break and never again, so it cannot spam a long session.
+    private static void noteObservationMode(ChainJob job, boolean patchApplied) {
+        if (patchApplied) {
+            if (!fallbackNotice.get() && fallbackNotice.compareAndSet(false, true)) {
+                VeinMinerPlus.LOGGER.info("Chained mining is using the removal observation.");
+            }
+            return;
+        }
+        if (!fallbackNotice.get() && fallbackNotice.compareAndSet(false, true)) {
+            VeinMinerPlus.LOGGER.warn("Chained mining is running without the removal observation; "
+                    + "block counts are unverified. Check that veinminerplus.mixins.json loaded.");
+            ServerPlayer player = job == null ? null : job.player;
+            if (player != null) {
+                player.displayClientMessage(
+                        Component.translatable("message.veinminerplus.unverified_counts"), false);
+            }
+        }
+    }
     // hand the block to JDT instead: the chain counter would stick at 1 and every
     // attempt would multiply into another 3x3/5x5/7x7 area break. Chained blocks are
     // therefore broken directly, without the event. The manual hit still goes through
@@ -764,10 +862,14 @@ public final class ChainEvents {
         player.displayClientMessage(Component.translatable("message.veinminerplus.interact_progress", count), true);
     }
 
+    // TPS as seen by the guard, derived from the measured tick interval.
+    //
+    // Deliberately not server.getAverageTickTime(): that value is written before
+    // ForgeEventFactory.onPostServerTick runs this mod's chain work, so a tick spending 90 ms in the
+    // chain still reads there as a few milliseconds. Judging overload by it would mean the guard
+    // never sees the cost it is supposed to guard against.
     private static double getServerTps(ServerLevel level) {
-        MinecraftServer server = level.getServer();
-        float tickTimeMillis = server.getAverageTickTime();
-        return tickTimeMillis <= 0.0F ? 20.0D : Math.min(20.0D, 1_000.0D / tickTimeMillis);
+        return ServerTickClock.tps();
     }
 
     private static int roundedTps(double tps) {
@@ -782,14 +884,26 @@ public final class ChainEvents {
         // One bucket per item and component set, so a drop finds its total in a single lookup.
         // A long chain accumulates thousands of buckets; scanning all of them per drop made every
         // drop cost grow with the number already accumulated.
-        private final Map<StackKey, Long> counts = new HashMap<>();
+        private final Map<StackKey, DropCount> counts = new HashMap<>();
+        private final StackKey lookupKey = new StackKey();
         private int experience;
 
         private void add(ItemStack stack) {
             if (stack.isEmpty()) {
                 return;
             }
-            counts.merge(new StackKey(stack), (long) stack.getCount(), Long::sum);
+            try {
+                lookupKey.set(stack.copyWithCount(1));
+                long count = stack.getCount();
+                DropCount bucket = counts.get(lookupKey);
+                if (bucket == null) {
+                    counts.put(new StackKey(lookupKey.template), new DropCount(count));
+                } else {
+                    bucket.count += count;
+                }
+            } finally {
+                lookupKey.clear();
+            }
         }
 
         private void addExperience(int amount) {
@@ -814,12 +928,12 @@ public final class ChainEvents {
             double x = player.getX();
             double y = player.getY();
             double z = player.getZ();
-            for (Map.Entry<StackKey, Long> entry : counts.entrySet()) {
+            for (Map.Entry<StackKey, DropCount> entry : counts.entrySet()) {
                 // A bucket holds one running total, so it has to be cut back to stack size before
                 // it leaves the buffer.
                 ItemStack template = entry.getKey().template;
                 int maxStackSize = template.getMaxStackSize();
-                long remaining = entry.getValue();
+                long remaining = entry.getValue().count;
                 while (remaining > 0) {
                     int amount = (int) Math.min(maxStackSize, remaining);
                     remaining -= amount;
@@ -844,18 +958,39 @@ public final class ChainEvents {
 
         private void clear() {
             counts.clear();
+            lookupKey.clear();
             experience = 0;
+        }
+
+        private static final class DropCount {
+            private long count;
+
+            private DropCount(long count) {
+                this.count = count;
+            }
         }
 
         // Identity of a bucket: the item plus every tag, the same pair the vanilla helper
         // compares. Count is deliberately excluded, it is what the bucket accumulates.
         private static final class StackKey {
-            private final ItemStack template;
-            private final int hash;
+            private ItemStack template;
+            private int hash;
+
+            private StackKey() {
+            }
 
             private StackKey(ItemStack stack) {
-                this.template = stack.copyWithCount(1);
-                this.hash = 31 * this.template.getItem().hashCode() + Objects.hashCode(this.template.getTag());
+                set(stack);
+            }
+
+            private void set(ItemStack stack) {
+                template = stack;
+                hash = 31 * template.getItem().hashCode() + Objects.hashCode(template.getTag());
+            }
+
+            private void clear() {
+                template = null;
+                hash = 0;
             }
 
             @Override
@@ -1140,6 +1275,9 @@ public final class ChainEvents {
         // Long-keyed maps stay primitive here; boxed Long keys collided into the same few
         // HashMap buckets near the origin and treeified.
         private final Long2ObjectMap<Map<Integer, List<BlockPos>>> sparseChunkMatches = new Long2ObjectOpenHashMap<>();
+        // A chunk is discovered a section at a time. An empty section still needs a marker, otherwise
+        // every later centre would rescan it and recreate the cold-centre spike.
+        private final Long2ObjectMap<Set<Integer>> sparseChunkScannedSections = new Long2ObjectOpenHashMap<>();
         private final Long2ObjectMap<LevelChunk> loadedChunks = new Long2ObjectOpenHashMap<>();
         private final List<BlockPos> graphOffsets;
         private final int totalLimit;
@@ -1152,7 +1290,10 @@ public final class ChainEvents {
         private int areaDepth;
         private int areaIndex;
         private int criticalTpsTicks;
-        private int tpsWarningCooldown;
+        // Set once the job has ended so a repeated finish() cannot flush the drops twice.
+        private boolean ended;
+        private Item cachedHeldItem;
+        private boolean cachedHeldItemIsJdt;
 
         private ChainJob(ServerLevel level, ServerPlayer player, BlockPos origin, Block targetBlock,
                 Direction face, ChainMode mode, DropBuffer drops, List<BlockPos> seeds) {
@@ -1210,6 +1351,7 @@ public final class ChainEvents {
         private void tick() {
             if (!HELD_KEYS.contains(player.getUUID()) || player.isRemoved() || player.isSpectator()
                     || player.serverLevel() != level) {
+                // Outside the normal tick path: no further tick will come, so end and settle now.
                 finish();
                 return;
             }
@@ -1494,10 +1636,6 @@ public final class ChainEvents {
                 return true;
             }
 
-            if (tpsWarningCooldown > 0) {
-                tpsWarningCooldown--;
-            }
-
             double tps = getServerTps(level);
             if (tps < TPS_CRITICAL_THRESHOLD) {
                 criticalTpsTicks++;
@@ -1512,41 +1650,21 @@ public final class ChainEvents {
             }
 
             criticalTpsTicks = 0;
-            if (tps < TPS_WARNING_THRESHOLD && tpsWarningCooldown == 0) {
-                showTpsMessage(player, "message.veinminerplus.tps_warning", tps);
-                tpsWarningCooldown = TPS_WARNING_COOLDOWN_TICKS;
-            }
             return true;
         }
 
+        // Back off before the critical threshold so the chain can recover instead of pausing after
+        // it pushes the measured tick interval below the configured safety floor.
         private int effectiveBlastBreakLimit() {
-            int configured = Config.MAX_BLAST_BLOCKS_PER_TICK.get();
-            double tps = getServerTps(level);
-            if (tps < TPS_WARNING_THRESHOLD) {
-                return Math.max(1, configured / 4);
-            }
-            if (tps < TPS_RECOVERY_THRESHOLD) {
-                return Math.max(1, configured / 2);
-            }
-            return configured;
+            return BlastBudget.scale(Config.MAX_BLAST_BLOCKS_PER_TICK.get(), getServerTps(level));
         }
 
         private int effectiveBlastSearchChecks() {
-            double tps = getServerTps(level);
-            if (tps < TPS_WARNING_THRESHOLD) {
-                return SEARCH_CHECKS_PER_TICK / 4;
-            }
-            if (tps < TPS_RECOVERY_THRESHOLD) {
-                return SEARCH_CHECKS_PER_TICK / 2;
-            }
-            return SEARCH_CHECKS_PER_TICK;
+            return BlastBudget.scale(SEARCH_CHECKS_PER_TICK, getServerTps(level));
         }
 
-        // The scan time budget shrinks with the same TPS scaling the check budget uses, so a
-        // struggling server scans proportionally less instead of holding the full allowance.
         private long sparseScanBudgetNanos() {
-            int effective = effectiveBlastSearchChecks();
-            return SPARSE_SCAN_BUDGET_NANOS * effective / SEARCH_CHECKS_PER_TICK;
+            return BlastBudget.scale(SPARSE_SCAN_BUDGET_NANOS, getServerTps(level));
         }
 
 
@@ -1565,39 +1683,62 @@ public final class ChainEvents {
                     long key = chunkKey(chunkX, chunkZ);
                     Map<Integer, List<BlockPos>> sections = sparseChunkMatches.get(key);
                     if (sections == null) {
-                        LevelChunk chunk = loadedChunks.get(key);
-                        if (chunk == null) {
-                            // Resident chunks only: a blocking getChunk generates terrain inside
-                            // this tick, and against ungenerated ground the closure keeps finding
-                            // new ore in what it just generated - one tick that never ends.
-                            chunk = level.getChunkSource().getChunkNow(chunkX, chunkZ);
-                            if (chunk == null) {
-                                continue;
-                            }
-                            loadedChunks.put(key, chunk);
-                        }
-
                         sections = new HashMap<>();
-                        Map<Integer, List<BlockPos>> buckets = sections;
-                        chunk.findBlocks(this::matchesSparseState,
-                                (pos, state) -> buckets
-                                        .computeIfAbsent(pos.getY() >> 4, sectionY -> new ArrayList<>())
-                                        .add(pos.immutable()));
                         sparseChunkMatches.put(key, sections);
                     }
+                    Set<Integer> scannedSections = sparseChunkScannedSections.get(key);
+                    if (scannedSections == null) {
+                        scannedSections = new HashSet<>();
+                        sparseChunkScannedSections.put(key, scannedSections);
+                    }
 
+                    LevelChunk chunk = null;
                     for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++) {
+                        // Decide the whole section from its coordinate box before touching any
+                        // position. An outside section is deliberately left unscanned: a later
+                        // centre may reach it, and the scanned marker must mean "fully inspected".
+                        SparseSectionGeometry.Reach reach = SparseSectionGeometry.classify(
+                                center.getX(), center.getY(), center.getZ(),
+                                chunkX, sectionY, chunkZ, maxSquaredDistance);
+                        if (reach == SparseSectionGeometry.Reach.OUTSIDE) {
+                            continue;
+                        }
+
+                        if (scannedSections.add(sectionY)) {
+                            if (chunk == null) {
+                                chunk = loadedChunks.get(key);
+                                if (chunk == null) {
+                                    // Resident chunks only: a blocking getChunk generates terrain inside
+                                    // this tick, and against ungenerated ground the closure keeps finding
+                                    // new ore in what it just generated - one tick that never ends.
+                                    chunk = level.getChunkSource().getChunkNow(chunkX, chunkZ);
+                                    if (chunk == null) {
+                                        scannedSections.remove(sectionY);
+                                        continue;
+                                    }
+                                    loadedChunks.put(key, chunk);
+                                }
+                            }
+                            List<BlockPos> built = buildSparseSectionMatches(chunk, chunkX, sectionY);
+                            if (!built.isEmpty()) {
+                                sections.put(sectionY, built);
+                            }
+                        }
+
                         List<BlockPos> matches = sections.get(sectionY);
                         if (matches == null) {
                             continue;
                         }
+
+                        boolean everyPositionInside = reach == SparseSectionGeometry.Reach.FULLY_INSIDE;
 
                         // Positions outside the sphere stay in the bucket, a later centre
                         // can still reach them. Positions that made it in are enqueued once
                         // and never looked at again, so they are dropped from the bucket.
                         for (int index = 0; index < matches.size();) {
                             BlockPos pos = matches.get(index);
-                            if (squaredDistance(center, pos) > maxSquaredDistance) {
+                            if (!everyPositionInside
+                                    && squaredDistance(center, pos) > maxSquaredDistance) {
                                 index++;
                                 continue;
                             }
@@ -1611,6 +1752,34 @@ public final class ChainEvents {
                     }
                 }
             }
+        }
+
+        /** Builds only one 16-cube bucket; other sections remain discoverable for later centres. */
+        private List<BlockPos> buildSparseSectionMatches(LevelChunk chunk, int chunkX, int sectionY) {
+            int sectionIndex = level.getSectionIndexFromSectionY(sectionY);
+            LevelChunkSection[] chunkSections = chunk.getSections();
+            if (sectionIndex < 0 || sectionIndex >= chunkSections.length) {
+                return Collections.emptyList();
+            }
+            LevelChunkSection section = chunkSections[sectionIndex];
+            if (section.hasOnlyAir() || !section.maybeHas(this::matchesSparseState)) {
+                return Collections.emptyList();
+            }
+
+            List<BlockPos> matches = new ArrayList<>();
+            int baseX = chunkX << 4;
+            int baseY = sectionY << 4;
+            int baseZ = chunk.getPos().z << 4;
+            for (int localY = 0; localY < 16; localY++) {
+                for (int localZ = 0; localZ < 16; localZ++) {
+                    for (int localX = 0; localX < 16; localX++) {
+                        if (matchesSparseState(section.getBlockState(localX, localY, localZ))) {
+                            matches.add(new BlockPos(baseX + localX, baseY + localY, baseZ + localZ));
+                        }
+                    }
+                }
+            }
+            return matches;
         }
 
         private boolean matchesSparseState(BlockState state) {
@@ -1629,7 +1798,28 @@ public final class ChainEvents {
             return capture;
         }
 
+        private boolean isJustDireThingsTool() {
+            Item held = player.getMainHandItem().getItem();
+            if (held != cachedHeldItem) {
+                cachedHeldItem = held;
+                ResourceLocation id = BuiltInRegistries.ITEM.getKey(held);
+                cachedHeldItemIsJdt = id != null && "justdirethings".equals(id.getNamespace());
+            }
+            return cachedHeldItemIsJdt;
+        }
+
+        /**
+         * Ends the job and settles the drops.
+         *
+         * A job can end inside its own last tick - an extreme blast finishes the whole chain in one
+         * tick - so the guard here matters: {@code ended} stops a second call from flushing the same
+         * drops again.
+         */
         private void finish() {
+            if (ended) {
+                return;
+            }
+            ended = true;
             drops.flush(player.serverLevel(), player);
             ACTIVE_JOBS.remove(player.getUUID(), this);
         }

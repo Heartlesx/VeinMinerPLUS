@@ -9,6 +9,12 @@ displayName="${mod_name}"
 authors="${mod_authors}"
 description='''${mod_description}'''
 
+# The removal observation: reads what vanilla's own removal call returned for each chained block.
+# This must sit right after [[mods]] and before the dependency tables; Forge parses the file in
+# order and a [[mixins]] block after [[dependencies]] is silently dropped.
+[[mixins]]
+config="veinminerplus.mixins.json"
+
 [[dependencies.${mod_id}]]
 modId="forge"
 mandatory=true

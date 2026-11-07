@@ -1,0 +1,39 @@
+=== radius 20 ===
+bucket   fill%    occupied    lookups   testsBef   testsAft    skipped    trusted
+4        2              31        729        124          8         29          0
+16       2              31        729        496         32         29          0
+64       2              31        729       1984        128         29          0
+256      2              31        729       7936        512         29          0
+4        5              60        729        240         16         56          0
+16       5              60        729        960         64         56          0
+64       5              60        729       3840        256         56          0
+256      5              60        729      15360       1024         56          0
+4        25            196        729        784         52        183          0
+16       25            196        729       3136        208        183          0
+64       25            196        729      12544        832        183          0
+256      25            196        729      50176       3328        183          0
+
+=== radius 32 ===
+bucket   fill%    occupied    lookups   testsBef   testsAft    skipped    trusted
+4        2              58       2197        232         12         54          1
+16       2              58       2197        928         48         54          1
+64       2              58       2197       3712        192         54          1
+256      2              58       2197      14848        768         54          1
+4        5             140       2197        560         20        134          1
+16       5             140       2197       2240         80        134          1
+64       5             140       2197       8960        320        134          1
+256      5             140       2197      35840       1280        134          1
+4        25            559       2197       2236         72        537          4
+16       25            559       2197       8944        288        537          4
+64       25            559       2197      35776       1152        537          4
+256      25            559       2197     143104       4608        537          4
+
+=== share of the scan's per-position work removed ===
+r=20 bucket=4: 93.3% of distance tests removed (240 -> 16), enqueues identical (4)
+r=20 bucket=16: 93.3% of distance tests removed (960 -> 64), enqueues identical (16)
+r=20 bucket=64: 93.3% of distance tests removed (3840 -> 256), enqueues identical (86)
+r=20 bucket=256: 93.3% of distance tests removed (15360 -> 1024), enqueues identical (363)
+r=32 bucket=4: 96.4% of distance tests removed (560 -> 20), enqueues identical (14)
+r=32 bucket=16: 96.4% of distance tests removed (2240 -> 80), enqueues identical (59)
+r=32 bucket=64: 96.4% of distance tests removed (8960 -> 320), enqueues identical (231)
+r=32 bucket=256: 96.4% of distance tests removed (35840 -> 1280), enqueues identical (939)
