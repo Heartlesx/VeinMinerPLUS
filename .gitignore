@@ -44,4 +44,41 @@ temp/
 
 # Third-party jars the optional compatibility patches compile against. They are never bundled into
 # the built mod; see libs/compat/README.md for which mods to download and where to put them.
-libs/compat/*.jar
+**/libs/compat/*.jar
+
+# The full Refined Storage release jar is somebody else's complete mod binary and this repository is
+# public; only the trimmed api-only jar is committed. See forge-1.20.1/libs/rs/README.md.
+forge-1.20.1/libs/rs/refinedstorage-1.12.4.jar
+
+### Local working material, never published ###
+# Other people's source trees kept for reference, and this workspace's own session notes and
+# performance evidence. Neither belongs in a public repository.
+其他仓库代码/
+交接用/
+
+# Local dev server run directory and the backup taken before the dev19 cleanup.
+forge-1.20.1/run-server/
+forge-1.20.1/_dev19-removed-backup/
+
+# Scratch files in the workspace root.
+rel_state.json
+火花/
+存储连接卡材质.gif
+
+# Forge installer leftovers unpacked into the 1.12.2 workspace (CREDITS, README, LICENSE, changelog).
+forge-1.12.2/CREDITS.txt
+forge-1.12.2/README.txt
+forge-1.12.2/LICENSE.txt
+forge-1.12.2/LICENSE-Paulscode*.txt
+forge-1.12.2/changelog.txt
+forge-1.12.2/logs/
+
+# Compiled output of the local harnesses under tools/.
+*.class
+
+# Unpacked jars and compiled output from the local harness audits.
+**/jar-audit*/
+**/jar-config-audit*/
+**/jar-inspect*/
+**/clock-check*/
+
