@@ -34,6 +34,18 @@ final class StorageRouter {
                     ? Ae2Storage.sink(level, bindings.target().pos(), player)
                     : null;
         }
+        if (StorageBindings.TYPE_RS.equals(bindings.type())) {
+            return ModList.get().isLoaded(RsStorage.MOD_ID)
+                    ? RsStorage.sink(level, bindings.target().pos())
+                    : null;
+        }
+        // Cards bound before RS support existed point at the block as generic storage; when that
+        // block is an RS network node, send the drops to its network instead of the block's slots.
+        // A block that hosts a node is never handed to the generic path, even when the network is
+        // down, because the generic path would feed a disk drive's disk slots instead.
+        if (ModList.get().isLoaded(RsStorage.MOD_ID) && RsStorage.canHostNetwork(level, bindings.target().pos())) {
+            return RsStorage.sink(level, bindings.target().pos());
+        }
         IItemHandler handler = blockHandler(level, bindings.target().pos());
         return handler == null ? null
                 : stack -> stack.setCount(
