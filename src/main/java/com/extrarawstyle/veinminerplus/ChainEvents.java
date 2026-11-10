@@ -247,6 +247,10 @@ public final class ChainEvents {
             // Another mod (e.g. Just Dire Things) already took over these drops.
             return;
         }
+        if (event.getBreaker() instanceof ServerPlayer player
+                && UselessModCompat.ownsCompressedHammerDrops(player.getMainHandItem())) {
+            return;
+        }
         DropBuffer drops = null;
         if (event.getBreaker() instanceof ServerPlayer player) {
             UUID id = player.getUUID();

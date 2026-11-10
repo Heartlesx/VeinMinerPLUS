@@ -17,8 +17,33 @@ final class UselessModCompat {
 
     private static Method smeltDrops;
     private static boolean unavailable;
+    private static Method staffMiningActive;
+    private static Method compressedHammerEnabled;
+    private static boolean hammerUnavailable;
 
     private UselessModCompat() {
+    }
+
+    // The staff collects vanilla item entities and replaces them with hammer results afterwards.
+    // Taking those entities here would preserve the input in our buffer as well as the output.
+    static boolean ownsCompressedHammerDrops(ItemStack tool) {
+        if (hammerUnavailable || !ModList.get().isLoaded("useless_stretcher")
+                || !ModList.get().isLoaded("exdeorum")) {
+            return false;
+        }
+        try {
+            if (staffMiningActive == null) {
+                staffMiningActive = Class.forName("com.sorrowmist.useless.stretcher.content.item.StaffMiningContext")
+                        .getMethod("active");
+                compressedHammerEnabled = Class.forName("com.sorrowmist.useless.utils.UComponentUtils")
+                        .getMethod("isExDeorumCompressedHammerEnabled", ItemStack.class);
+            }
+            return Boolean.TRUE.equals(staffMiningActive.invoke(null))
+                    && Boolean.TRUE.equals(compressedHammerEnabled.invoke(null, tool));
+        } catch (ReflectiveOperationException | LinkageError failure) {
+            hammerUnavailable = true;
+            return false;
+        }
     }
 
     static List<ItemStack> smeltDrops(Level level, List<ItemStack> drops, ItemStack tool) {

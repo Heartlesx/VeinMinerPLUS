@@ -1,0 +1,14 @@
+// Opt-in real-server regression; test classes never enter a release jar.
+gradle.afterProject { project ->
+    if (project != project.rootProject) return
+    project.configurations.neoForgeConfigOnly.dependencies.clear()
+    project.dependencies.add('neoForgeConfigOnly', project.files('build/hammer-regression/moddev-config.json'))
+    project.sourceSets.create('hammerRegression') {
+        java.srcDir 'tools/hammer-regression/src'
+        compileClasspath += project.sourceSets.main.output + project.sourceSets.main.compileClasspath
+    }
+    project.neoForge.runs.server {
+        gameDirectory = project.file(project.property('hammerRunDirectory'))
+        systemProperty 'veinminerplus.hammerRegression', 'true'
+    }
+}
