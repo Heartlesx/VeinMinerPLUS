@@ -212,7 +212,7 @@ public final class ChainEvents {
                 pendingSeeds));
     }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST)
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
     public void onEntityJoinLevel(EntityJoinLevelEvent event) {
         if (!(event.getLevel() instanceof ServerLevel)
                 || event.loadedFromDisk()
