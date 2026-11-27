@@ -649,7 +649,7 @@ public final class VeinMinerPlusClient {
         if (minecraft.level != null && minecraft.hitResult instanceof BlockHitResult hit
                 && hit.getType() == HitResult.Type.BLOCK) {
             ChainEvents.InteractRule rule = ChainEvents.resolveInteractRule(minecraft.level,
-                    hit.getBlockPos(), minecraft.player.getMainHandItem());
+                    hit.getBlockPos(), minecraft.player.getMainHandItem(), hit.getDirection());
             if (rule != null) {
                 List<BlockPos> targets = new ArrayList<>();
                 ChainEvents.spreadConnected(minecraft.level, hit.getBlockPos(),

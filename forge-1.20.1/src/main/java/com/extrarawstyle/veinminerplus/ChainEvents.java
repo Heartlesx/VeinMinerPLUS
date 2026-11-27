@@ -36,6 +36,7 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemNameBlockItem;
 import net.minecraft.world.item.ItemStack;
@@ -48,10 +49,10 @@ import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BaseFireBlock;
+import net.minecraft.world.level.block.BushBlock;
 import net.minecraft.world.level.block.CocoaBlock;
 import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.DoublePlantBlock;
-import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.GameMasterBlock;
 import net.minecraft.world.level.block.SweetBerryBushBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -276,7 +277,8 @@ public final class ChainEvents {
         }
 
         List<BlockPos> targets = new ArrayList<>();
-        InteractRule rule = resolveInteractRule(level, event.getPos(), player.getMainHandItem());
+        InteractRule rule = resolveInteractRule(level, event.getPos(), player.getMainHandItem(),
+                event.getFace());
         if (rule == null) {
             return;
         }
@@ -308,7 +310,8 @@ public final class ChainEvents {
     // Shared by the server job and the client preview, so the white outline always matches what
     // the job will do. Returns null when the held item is not handled by this mode, or when the
     // aimed block itself cannot be acted on - a chain never starts from a position vanilla refuses.
-    static InteractRule resolveInteractRule(Level level, BlockPos origin, ItemStack stack) {
+    // The clicked face is only consulted by the planting branch, which needs the top face.
+    static InteractRule resolveInteractRule(Level level, BlockPos origin, ItemStack stack, Direction face) {
         BlockState originState = level.getBlockState(origin);
         if (isHarvestable(originState) && !BlockBlacklist.contains(originState)) {
             return new InteractRule(InteractKind.CROP, pos -> {
@@ -327,8 +330,14 @@ public final class ChainEvents {
         if (stack.canPerformAction(ToolActions.SHOVEL_FLATTEN) && isFlattenable(level, origin)) {
             return new InteractRule(InteractKind.SHOVEL, pos -> isFlattenable(level, pos), true);
         }
-        if (stack.getItem() instanceof ItemNameBlockItem && isPlantable(level, origin)) {
-            return new InteractRule(InteractKind.SEED, pos -> isPlantable(level, pos), true);
+        // Any plant the held block can stand on: saplings on dirt, seeds on farmland, mushrooms in
+        // the dark, sugar cane beside water. The block decides, so no per-mod list is kept. Only the
+        // top face counts, because the plant lands in the space above the clicked block; on a side
+        // click vanilla would put it beside the block instead, so that click is left alone.
+        if (face == Direction.UP && stack.getItem() instanceof BlockItem item
+                && (item.getBlock() instanceof BushBlock || item instanceof ItemNameBlockItem)
+                && isPlantable(level, origin, item)) {
+            return new InteractRule(InteractKind.SEED, pos -> isPlantable(level, pos, item), true);
         }
         // Flint and steel lights a campfire or candle in place, ignites TNT through its own block
         // interaction, and otherwise puts fire next to the clicked face. The candidates are blocks
@@ -465,9 +474,14 @@ public final class ChainEvents {
         return level.getBlockState(pos).is(BlockTags.DIRT) && level.getBlockState(pos.above()).isAir();
     }
 
-    private static boolean isPlantable(Level level, BlockPos pos) {
-        return level.getBlockState(pos).getBlock() instanceof FarmBlock
-                && level.getBlockState(pos.above()).isAir();
+    // Whether the held plant can stand in the air above this block, judged by the plant itself:
+    // canSurvive already covers the dirt tag for saplings, farmland for crops, light for mushrooms,
+    // water for sugar cane and the neighbour rules for cacti. An occupied space is skipped rather
+    // than replaced, so an existing plant is never destroyed.
+    private static boolean isPlantable(Level level, BlockPos pos, BlockItem item) {
+        BlockPos above = pos.above();
+        return level.getBlockState(above).isAir()
+                && item.getBlock().defaultBlockState().canSurvive(level, above);
     }
 
     // Mirrors what the pack already lets a player harvest with a single right click (FTB
@@ -1148,7 +1162,9 @@ public final class ChainEvents {
             this.player = player;
             this.origin = origin;
             this.rule = rule;
-            this.face = face;
+            // A chained plant always goes into the space above its own block, whatever face the
+            // player clicked; with any other face vanilla would place it beside the block instead.
+            this.face = rule.kind() == InteractKind.SEED ? Direction.UP : face;
             this.gate = gate;
         }
 
